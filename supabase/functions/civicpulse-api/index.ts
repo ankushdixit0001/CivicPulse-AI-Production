@@ -322,20 +322,34 @@ Deno.serve(async (req: Request) => {
         const analysisAvailable = internalTokenReady && capabilities?.vision_analysis?.available === true;
         const repairAvailable = internalTokenReady && capabilities?.repair_verification?.available === true;
         const chatAvailable = internalTokenReady && capabilities?.chat?.available === true;
+        const capabilityView = (name: string, isConfigured: boolean) => {
+          const item = capabilities?.[name] || {};
+          const canUse = internalTokenReady && item.available === true;
+          return {
+            ...item,
+            configured: item.configured === true || isConfigured,
+            available: canUse,
+            status: canUse ? "available" : (!isConfigured || !internalTokenReady ? "unavailable" : (item.status || "unknown")),
+            reason: !internalTokenReady
+              ? "Internal AI service authentication is not configured correctly."
+              : (canUse ? "" : (item.reason || "No recent successful task request has confirmed availability.")),
+          };
+        };
+        const verifiedCapabilities = {
+          chat: capabilityView("chat", analysisConfigured),
+          vision_analysis: capabilityView("vision_analysis", analysisConfigured),
+          repair_verification: capabilityView("repair_verification", repairConfigured),
+        };
         return json({
           ...health,
           configured: true,
-          available: analysisAvailable,
-          status: capabilities?.vision_analysis?.status || (analysisConfigured ? "unknown" : "unavailable"),
-          repair_verification_available: repairAvailable,
-          capabilities: {
-            chat: capabilities?.chat || { configured: analysisConfigured, available: chatAvailable, status: "unknown", reason: "Capability has not been verified." },
-            vision_analysis: capabilities?.vision_analysis || { configured: analysisConfigured, available: false, status: "unknown", reason: "A successful image-analysis request has not yet been observed." },
-            repair_verification: capabilities?.repair_verification || { configured: repairConfigured, available: false, status: "unknown", reason: "A successful repair-verification request has not yet been observed." },
-          },
-          reason: analysisAvailable
+          available: verifiedCapabilities.vision_analysis.available,
+          status: verifiedCapabilities.vision_analysis.status,
+          repair_verification_available: verifiedCapabilities.repair_verification.available,
+          capabilities: verifiedCapabilities,
+          reason: verifiedCapabilities.vision_analysis.available
             ? ""
-            : "The vision service may be configured, but no recent successful image-analysis request has confirmed availability.",
+            : verifiedCapabilities.vision_analysis.reason,
         });
       } catch (error) {
         return json({ configured: true, available: false, status: "unavailable", reason: "Could not reach the vision service health endpoint." });
@@ -492,10 +506,18 @@ Deno.serve(async (req: Request) => {
             const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
             if (!response.ok) throw new Error("AI verification service failed.");
             verification = await response.json();
+            if (verification?.status === "success") {
+              recordAiCapability("repair_verification", "available", String(verification.provider || "vision-service"), String(verification.model || "unknown"));
+            } else {
+              recordAiCapability("repair_verification", "unavailable", undefined, undefined, "The repair comparison service returned no successful result.");
+            }
           } else {
             verification = await verifyWithFreeModel(beforeBlob, file);
           }
-        } catch (error) { verification = { status: "unavailable", is_resolved: false, reason: String(error).slice(0, 200), human_review_required: true }; }
+        } catch (error) {
+          recordAiCapability("repair_verification", "unavailable", undefined, undefined, "No configured provider completed repair verification.");
+          verification = { status: "unavailable", is_resolved: false, reason: "Repair verification is temporarily unavailable.", human_review_required: true };
+        }
         const update = {
           after_image_path: image.path,
           after_damage_pct: Number.isFinite(Number(verification.after_damage_pct)) ? Number(verification.after_damage_pct) : null,
