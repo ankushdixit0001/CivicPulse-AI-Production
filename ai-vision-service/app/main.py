@@ -383,7 +383,7 @@ async def civicpulse_chat(
             "content": system_prompt,
         }, {
             "role": "user",
-            "content": "Live CivicPulse context (may be empty): " + context[:4000] + "\\n\\nUser question: " + question,
+            "content": "Live CivicPulse context (may be empty): " + context[:4000] + "\n\nUser question: " + question,
         }], max_tokens=650, capability="chat")
         reply = result.get("reply") or result.get("answer")
         if not isinstance(reply, str) or not reply.strip():
