@@ -1424,3 +1424,38 @@ button {
 
   }
 }
+
+
+/* Real interactive OpenStreetMap tiles replace the previous decorative map mockups. */
+.map-box { background: #dbeafe; }
+.location-map { width: 100%; height: 100%; min-height: 320px; z-index: 0; background: #dbeafe; }
+.location-chip { z-index: 500; box-shadow: 0 2px 12px rgba(0,0,0,.22); cursor: pointer; }
+.map-selection-hint {
+  position: absolute; z-index: 500; left: 12px; right: 12px; bottom: 12px;
+  padding: 8px 12px; border-radius: 10px; background: rgba(9,16,23,.88);
+  color: #eef6ff; font-size: .76rem; line-height: 1.4; pointer-events: none;
+  overflow-wrap: anywhere;
+}
+.command-map-panel .map-panel-inner { min-height: 480px; }
+.command-map-heading { color: var(--text); font-size: .76rem; font-weight: 800; letter-spacing: .14em; margin: 0 0 12px; }
+.ticket-map-wrap { position: relative; width: 100%; }
+.ticket-map { width: 100%; height: 420px; border-radius: 14px; background: #dbeafe; }
+.ticket-map-caption { margin-top: 8px; color: var(--muted, #94a3b8); font-size: .76rem; }
+.select-box select {
+  appearance: none; width: 100%; min-width: 120px; border: 0; outline: 0;
+  background: transparent; color: inherit; font: inherit; padding: 8px 28px 8px 10px; cursor: pointer;
+}
+.select-box option { color: #111827; background: #ffffff; }
+.card-action {
+  width: 100%; margin-top: 12px; border: 1px solid rgba(79,158,247,.35);
+  border-radius: 9px; padding: 9px 10px; background: rgba(79,158,247,.1);
+  color: #b9d7ff; font: inherit; font-size: .78rem; font-weight: 700; cursor: pointer;
+}
+.card-action:hover { background: rgba(79,158,247,.2); }
+.card-evidence-note { margin: 12px 0 0; font-size: .72rem; line-height: 1.4; color: #f6d47a; }
+.leaflet-container { font-family: inherit; }
+@media (max-width: 640px) {
+  .ticket-map { height: 320px; }
+  .map-box { height: 320px; }
+  .command-map-panel .map-panel-inner { min-height: 0; }
+}

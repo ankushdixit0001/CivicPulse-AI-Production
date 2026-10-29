@@ -14,6 +14,7 @@ const ticketSchema = new mongoose.Schema(
       minlength: 5,
       maxlength: 2000,
     },
+    landmark: { type: String, trim: true, maxlength: 200, default: '' },
     priority_score: {
       type: Number,
       default: 0,

@@ -41,11 +41,10 @@ const normalizeDefect = (label, fallback = 'unknown') => {
   return aliases[value] || (allowedDefects.has(fallback) ? fallback : 'unknown');
 };
 
-const getZoneFromCoordinates = ([lng, lat]) => {
-  // Zone names are intentionally generic until real municipal boundaries are configured.
-  if (lat > 40.74) return 'north';
-  if (lat < 40.72) return 'south';
-  return 'central';
+const getZoneFromCoordinates = (_coordinates) => {
+  // Do not infer North/South/Central from unrelated New York latitude thresholds.
+  // Replace this with a municipal-boundary lookup when real service zones are configured.
+  return 'unassigned';
 };
 
 const emitSocketEvent = (req, eventName, payload) => {
@@ -80,13 +79,14 @@ router.get('/', async (req, res, next) => {
 
 router.post('/report', upload.single('image'), async (req, res, next) => {
   try {
-    const { defect_type, latitude, longitude, description, status = 'Pending' } = req.body;
+    const { defect_type, latitude, longitude, description, landmark = '', status = 'Pending' } = req.body;
     const file = req.file;
 
     if (!file) return res.status(400).json({ message: 'Image file is required.' });
     if (!description || String(description).trim().length < 5 || String(description).trim().length > 2000) {
       return res.status(400).json({ message: 'Description must be between 5 and 2000 characters.' });
     }
+    if (String(landmark).trim().length > 200) return res.status(400).json({ message: 'Landmark must be 200 characters or fewer.' });
     if (!allowedDefects.has(defect_type)) return res.status(400).json({ message: 'Choose a supported issue category.' });
     if (status !== 'Pending') return res.status(400).json({ message: 'New reports must start as Pending.' });
 
@@ -127,6 +127,7 @@ router.post('/report', upload.single('image'), async (req, res, next) => {
     const newTicket = await Ticket.create({
       defect_type: defectLabel,
       description: String(description).trim(),
+      landmark: String(landmark || '').trim(),
       priority_score: Math.round(Math.min(100, Math.max(0, Number(aiResult.priority_score) || 0))),
       severity: ['CRITICAL', 'MEDIUM', 'LOW'].includes(aiResult.severity) ? aiResult.severity : 'LOW',
       location: { type: 'Point', coordinates: [lng, lat] },

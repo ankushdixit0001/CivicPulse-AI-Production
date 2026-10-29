@@ -15,53 +15,12 @@ import {
   X,
 } from 'lucide-react';
 import { Link, NavLink, Route, Routes } from 'react-router-dom';
+import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
+import { io } from 'socket.io-client';
+import 'leaflet/dist/leaflet.css';
 
-const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000';
-
-const fallbackTickets = [
-  {
-    _id: 'fallback-1',
-    defect_type: 'pothole',
-    priority_score: 92,
-    severity: 'CRITICAL',
-    status: 'Pending',
-    zone: 'central',
-    location: { type: 'Point', coordinates: [-73.9867, 40.7306] },
-    upvote_count: 18,
-    report_frequency: 5,
-    confidence: 0.94,
-    before_damage_pct: 74,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    _id: 'fallback-2',
-    defect_type: 'garbage',
-    priority_score: 58,
-    severity: 'MEDIUM',
-    status: 'Assigned',
-    zone: 'north',
-    location: { type: 'Point', coordinates: [-73.9831, 40.7387] },
-    upvote_count: 8,
-    report_frequency: 3,
-    confidence: 0.82,
-    before_damage_pct: 42,
-    createdAt: new Date().toISOString(),
-  },
-  {
-    _id: 'fallback-3',
-    defect_type: 'streetlight',
-    priority_score: 31,
-    severity: 'LOW',
-    status: 'Resolved',
-    zone: 'south',
-    location: { type: 'Point', coordinates: [-73.9774, 40.7149] },
-    upvote_count: 4,
-    report_frequency: 2,
-    confidence: 0.71,
-    before_damage_pct: 19,
-    createdAt: new Date().toISOString(),
-  },
-];
+const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : '')).replace(/\/+$/, '');
+const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
 
 const workflow = [
   { id: '01', title: 'Snap', description: 'Citizens photograph the issue and pin its location.', icon: Camera },
@@ -69,6 +28,83 @@ const workflow = [
   { id: '03', title: 'Merge', description: 'Reports within 15 m of the same issue join one master ticket.', icon: MapPinned },
   { id: '04', title: 'Verify', description: 'Before/after photos prove the repair was actually done.', icon: Check },
 ];
+
+function MapClickHandler({ onLocationChange }) {
+  useMapEvents({ click(event) { onLocationChange(event.latlng.lat, event.latlng.lng); } });
+  return null;
+}
+
+function MapCenterSync({ latitude, longitude }) {
+  const map = useMap();
+  useEffect(() => {
+    if (latitude === '' || longitude === '') return;
+    const lat = Number(latitude);
+    const lng = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return;
+    map.flyTo([lat, lng], Math.max(map.getZoom(), 15), { duration: 0.35 });
+  }, [map, latitude, longitude]);
+  return null;
+}
+
+function LocationPickerMap({ latitude, longitude, onLocationChange }) {
+  const hasLocation = latitude !== '' && longitude !== '' &&
+    Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude)) &&
+    Math.abs(Number(latitude)) <= 90 && Math.abs(Number(longitude)) <= 180;
+  const selectedPosition = hasLocation ? [Number(latitude), Number(longitude)] : null;
+  return (
+    <MapContainer className="location-map" center={selectedPosition || DEFAULT_MAP_CENTER} zoom={selectedPosition ? 15 : 5} scrollWheelZoom>
+      <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <MapClickHandler onLocationChange={onLocationChange} />
+      {selectedPosition && (
+        <>
+          <MapCenterSync latitude={latitude} longitude={longitude} />
+          <CircleMarker center={selectedPosition} radius={9} pathOptions={{ color: '#ffffff', weight: 3, fillColor: '#2563eb', fillOpacity: 0.95 }}>
+            <Popup>Selected incident location</Popup>
+          </CircleMarker>
+        </>
+      )}
+    </MapContainer>
+  );
+}
+
+function FitTicketBounds({ points }) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 1) map.setView(points[0], 13);
+    else if (points.length > 1) map.fitBounds(points, { padding: [28, 28], maxZoom: 13 });
+  }, [map, points]);
+  return null;
+}
+
+function TicketMap({ tickets }) {
+  const mappedTickets = tickets.map((ticket) => {
+    const coordinates = ticket.location?.coordinates;
+    if (!Array.isArray(coordinates) || coordinates.length !== 2) return null;
+    const lng = Number(coordinates[0]);
+    const lat = Number(coordinates[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+    return { ticket, position: [lat, lng] };
+  }).filter(Boolean);
+  const points = mappedTickets.map((item) => item.position);
+  return (
+    <div className="ticket-map-wrap">
+      <MapContainer className="ticket-map" center={points[0] || DEFAULT_MAP_CENTER} zoom={points.length ? 12 : 5} scrollWheelZoom>
+        <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <FitTicketBounds points={points} />
+        {mappedTickets.map(({ ticket, position }) => {
+          const resolved = ticket.status === 'Resolved';
+          const color = resolved ? '#16a34a' : ticket.severity === 'CRITICAL' ? '#dc2626' : ticket.severity === 'MEDIUM' ? '#d97706' : '#2563eb';
+          return (
+            <CircleMarker key={ticket._id} center={position} radius={8} pathOptions={{ color: '#ffffff', weight: 2, fillColor: color, fillOpacity: 0.92 }}>
+              <Popup><strong>{ticket.defect_type || 'Civic issue'}</strong><br />{ticket.status || 'Pending'} · {ticket.severity || 'LOW'}<br />Priority: {ticket.priority_score ?? 0}<br />{ticket.description || 'No description provided'}</Popup>
+            </CircleMarker>
+          );
+        })}
+      </MapContainer>
+      <div className="ticket-map-caption">{mappedTickets.length ? `${mappedTickets.length} mapped incident${mappedTickets.length === 1 ? '' : 's'}` : 'No mapped reports yet — the map will populate when reports are submitted.'}</div>
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -262,21 +298,26 @@ function LandingPage() {
 
 function ReportPage() {
   const fileInputRef = useRef(null);
-  const [form, setForm] = useState({
-    defect_type: 'pothole',
-    latitude: '',
-    longitude: '',
-    description: 'Large pothole near a pedestrian crossing and curb.',
-    issueType: 'AI decides automatically',
-  });
+  const [form, setForm] = useState({ defect_type: 'pothole', latitude: '', longitude: '', landmark: '', description: '' });
   const [preview, setPreview] = useState('');
   const [status, setStatus] = useState('Ready');
   const [submitting, setSubmitting] = useState(false);
 
   const applyCameraOrFile = (file) => {
     if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setStatus('Please choose a JPG, PNG, or WebP image.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setStatus('Image must be 8 MB or smaller.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => setPreview(reader.result || '');
+    reader.onerror = () => setStatus('The selected image could not be read. Please try another file.');
     reader.readAsDataURL(file);
   };
 
@@ -308,8 +349,23 @@ function ReportPage() {
     );
   };
 
+  const selectMapLocation = (latitude, longitude) => {
+    setForm((current) => ({ ...current, latitude: latitude.toFixed(6), longitude: longitude.toFixed(6) }));
+    setStatus('Map pin selected. Confirm the location before submitting.');
+  };
+
   const submitReport = async (event) => {
     event.preventDefault();
+    const lat = Number(form.latitude);
+    const lng = Number(form.longitude);
+    if (form.latitude === '' || form.longitude === '' || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      setStatus('Select a location on the map or use My location before submitting.');
+      return;
+    }
+    if (form.description.trim().length < 5 || form.description.trim().length > 2000) {
+      setStatus('Describe the issue in 5–2000 characters.');
+      return;
+    }
     if (!fileInputRef.current?.files?.[0]) {
       setStatus('Please attach or capture a photo before submitting.');
       return;
@@ -321,7 +377,8 @@ function ReportPage() {
     formData.append('defect_type', form.defect_type);
     formData.append('latitude', form.latitude);
     formData.append('longitude', form.longitude);
-    formData.append('description', form.description);
+    formData.append('description', form.description.trim());
+    formData.append('landmark', form.landmark.trim());
     formData.append('status', 'Pending');
 
     setSubmitting(true);
@@ -332,7 +389,7 @@ function ReportPage() {
         method: 'POST',
         body: formData,
       });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
 
       if (!response.ok) {
         throw new Error(result.message || 'Submission failed.');
@@ -425,9 +482,9 @@ function ReportPage() {
               onChange={handleFileChange}
             />
 
-            <button type="button" className="analysis-btn">
+            <button type="button" className="analysis-btn" onClick={() => setStatus(preview ? "AI analysis runs when you submit the report." : "Capture or upload an image before AI analysis.")}>
               <Sparkles size={18} />
-              Analyze with AI
+              AI analysis on submit
             </button>
           </section>
 
@@ -438,34 +495,27 @@ function ReportPage() {
             </div>
 
             <div className="map-box">
+              <LocationPickerMap latitude={form.latitude} longitude={form.longitude} onLocationChange={selectMapLocation} />
               <button type="button" className="location-chip" onClick={useCurrentLocation}>
-                <LocateFixed size={14} />
-                My location
+                <LocateFixed size={14} /> My location
               </button>
-              <div className="map-controls">
-                <button type="button" aria-label="Zoom in">+</button>
-                <button type="button" aria-label="Zoom out">−</button>
-              </div>
-
-              <div className="map-marker map-marker-a" />
-              <div className="map-marker map-marker-b" />
-              <div className="map-label map-label-top">AI required</div>
-              <div className="map-label map-label-right">Geo-verified</div>
-              <div className="map-attribution">
-                <span className="map-pin" />
-                Leaflet © OpenStreetMap © CARTO
+              <div className="map-selection-hint">
+                {form.latitude && form.longitude ? `Pinned: ${form.latitude}, ${form.longitude}` : 'Tap the map to drop a pin, or use My location'}
               </div>
             </div>
 
             <label className="field-label small-label">
               <span>Nearest landmark / address (optional)</span>
-              <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              <input type="text" maxLength={200} value={form.landmark} onChange={(e) => setForm({ ...form, landmark: e.target.value })} placeholder="Street, landmark, or nearby building" />
             </label>
 
             <label className="field-label">
               <span>Describe the issue — what’s wrong, since when, how bad...</span>
               <textarea
                 rows="3"
+                minLength={5}
+                maxLength={2000}
+                required
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
               />
@@ -487,11 +537,11 @@ function ReportPage() {
             <div className="lat-long-row">
               <label className="mini-field">
                 <span>Latitude</span>
-                <input type="number" step="0.0001" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} />
+                <input type="number" step="any" min="-90" max="90" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} />
               </label>
               <label className="mini-field">
                 <span>Longitude</span>
-                <input type="number" step="0.0001" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} />
+                <input type="number" step="any" min="-180" max="180" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} />
               </label>
             </div>
 
@@ -532,6 +582,7 @@ function CommandCenterPage() {
   const [tickets, setTickets] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [activeFilter, setActiveFilter] = useState('All statuses');
+  const [activeDefectFilter, setActiveDefectFilter] = useState('All defects');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -551,12 +602,17 @@ function CommandCenterPage() {
     };
 
     loadTickets();
+    if (!apiBase) return undefined;
+    const socket = io(apiBase, { transports: ['websocket', 'polling'] });
+    socket.on('INCIDENT_CREATED', (ticket) => setTickets((current) => [ticket, ...current.filter((item) => item._id !== ticket._id)]));
+    socket.on('INCIDENT_UPDATED', (ticket) => setTickets((current) => current.map((item) => item._id === ticket._id ? { ...item, ...ticket } : item)));
+    return () => socket.disconnect();
   }, []);
 
-  const visibleTickets = useMemo(() => {
-    if (activeFilter === 'All statuses') return tickets;
-    return tickets.filter((ticket) => ticket.status === activeFilter);
-  }, [tickets, activeFilter]);
+  const visibleTickets = useMemo(() => tickets.filter((ticket) =>
+    (activeFilter === 'All statuses' || ticket.status === activeFilter) &&
+    (activeDefectFilter === 'All defects' || ticket.defect_type === activeDefectFilter)
+  ), [tickets, activeFilter, activeDefectFilter]);
 
   const dispatchQueue = useMemo(() => {
     const queue = {
@@ -573,7 +629,7 @@ function CommandCenterPage() {
     });
 
     return queue;
-  }, [tickets]);
+  }, [visibleTickets]);
 
   const updateStatus = async (ticketId, nextStatus) => {
     try {
@@ -634,14 +690,16 @@ function CommandCenterPage() {
           </div>
 
           <div className="command-filter-row">
-            <div className="select-box">
-              <span className="select-icon">⌄</span>
-              <span>{activeFilter}</span>
-            </div>
-            <div className="select-box">
-              <span className="select-icon">⌄</span>
-              <span>All defects</span>
-            </div>
+            <label className="select-box" aria-label="Filter by status">
+              <select value={activeFilter} onChange={(event) => setActiveFilter(event.target.value)}>
+                <option>All statuses</option><option>Pending</option><option>Assigned</option><option>In Progress</option><option>Resolved</option>
+              </select>
+            </label>
+            <label className="select-box" aria-label="Filter by defect">
+              <select value={activeDefectFilter} onChange={(event) => setActiveDefectFilter(event.target.value)}>
+                <option>All defects</option><option value="pothole">Pothole</option><option value="garbage">Garbage</option><option value="sewage">Sewage</option><option value="streetlight">Streetlight</option><option value="unknown">Unknown</option>
+              </select>
+            </label>
           </div>
         </div>
 
@@ -658,34 +716,15 @@ function CommandCenterPage() {
         </div>
 
         <div className="command-content-grid">
-          <section className="map-panel">
+          <section className="map-panel command-map-panel">
             <div className="map-panel-inner">
-              <div className="map-zoom-controls">
-                <button type="button">+</button>
-                <button type="button">−</button>
-              </div>
-
-              <div className="geo-label geo-label-a">API KEY REQUIRED</div>
-              <div className="geo-label geo-label-b">API KEY REQUIRED</div>
-              <div className="geo-label geo-label-c">API KEY REQUIRED</div>
-
-              <div className="map-point point-red" style={{ left: '36%', top: '35%' }} />
-              <div className="map-point point-yellow" style={{ left: '52%', top: '48%' }} />
-              <div className="map-point point-green" style={{ left: '72%', top: '61%' }} />
-              <div className="map-point point-red" style={{ left: '22%', top: '65%' }} />
-              <div className="map-point point-yellow" style={{ left: '62%', top: '19%' }} />
-
+              <div className="command-map-heading">LIVE INCIDENT MAP</div>
+              <TicketMap tickets={visibleTickets} />
               <div className="map-legend">
-                {['CRITICAL', 'MEDIUM', 'LOW', 'RESOLVED'].map((severity) => (
-                  <span key={severity} className={`legend-chip ${severity.toLowerCase().replace(/\s+/g, '-')}`}>
-                    {severity}
-                  </span>
-                ))}
-              </div>
-
-              <div className="map-footer">
-                <span>Leaflet</span>
-                <span>© OpenStreetMap © CARTO</span>
+                <span className="legend-chip critical">CRITICAL</span>
+                <span className="legend-chip medium">MEDIUM</span>
+                <span className="legend-chip low">LOW</span>
+                <span className="legend-chip resolved">RESOLVED</span>
               </div>
             </div>
           </section>
@@ -733,7 +772,7 @@ function CommandCenterPage() {
 
               <div className="kanban-cards">
                 {(dispatchQueue[status] || []).map((ticket) => (
-                  <div key={ticket._id} className="kanban-card" onClick={() => updateStatus(ticket._id, status)}>
+                  <div key={ticket._id} className="kanban-card">
                     <div className="card-header-line">
                       <span className="card-id">{ticket._id?.slice(-5) || 'N/A'}</span>
                       <span className={`card-severity ${String(ticket.severity || 'MEDIUM').toLowerCase()}`}>
@@ -743,9 +782,12 @@ function CommandCenterPage() {
                     <div className="card-title">{ticket.defect_type}</div>
                     <div className="card-location">{ticket.zone || 'central'} Zone</div>
                     <div className="card-footer">
-                      <span>{ticket.priority_score || 0}</span>
-                      <span>{ticket.upvote_count || 0}</span>
+                      <span>Priority {ticket.priority_score ?? 0}</span>
+                      <span>Reports {ticket.report_frequency ?? 1}</span>
                     </div>
+                    {status === 'Pending' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id, 'Assigned')}>Assign ticket →</button>}
+                    {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id, 'In Progress')}>Start work →</button>}
+                    {status === 'In Progress' && <p className="card-evidence-note">Resolution requires after-repair evidence.</p>}
                   </div>
                 ))}
               </div>
