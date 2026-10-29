@@ -1,10 +1,10 @@
--- Retired bootstrap placeholder retained for version-history compatibility.
+-- Retired bootstrap placeholder retained for migration-history compatibility.
 --
--- This migration was present in the Git repository but is not recorded as applied
--- in the current CivicPulse production Supabase project. The production schema is
--- represented by the reconstructed baseline at 20261029151344_initial_civicpulse_schema.sql.
+-- This SQL was present in Git but its version is not recorded in the active
+-- CivicPulse production Supabase project. The deployed schema is represented by
+-- the reconstructed baseline at 20261029151344_initial_civicpulse_schema.sql.
+-- Executing the old schema-creation statements would collide with the already
+-- provisioned enums/tables and duplicate the later baseline on a clean reset.
 --
--- Applying this older SQL against an already-provisioned project would fail on
--- existing enum/table names; a fresh reset would also duplicate the later baseline.
--- Keep this file intentionally empty so migration history can be reconciled safely.
--- Do not add schema changes here. New changes belong in a new timestamped migration.
+-- Keep this migration intentionally empty. Do not add schema changes here.
+-- New schema changes belong in a new timestamped migration. See migrations/README.md.
