@@ -128,7 +128,17 @@ Deno.serve(async (req: Request) => {
         const response = await fetch(`${AI_SERVICE_URL}/health`, { headers, signal: AbortSignal.timeout(8000) });
         if (!response.ok) return json({ configured: true, available: false, reason: `Vision service health check returned ${response.status}.` });
         const health = await response.json();
-        return json({ configured: true, available: true, ...health });
+        const analysisConfigured = health?.defect_reasoning_configured === true && health?.inference_auth_configured === true;
+        const repairConfigured = health?.repair_verification_configured === true && health?.inference_auth_configured === true;
+        return json({
+          configured: true,
+          available: analysisConfigured,
+          repair_verification_available: repairConfigured,
+          ...health,
+          available: analysisConfigured,
+          repair_verification_available: repairConfigured,
+          ...(!analysisConfigured ? { reason: "Vision service is running, but OPENAI_API_KEY or VISION_API_TOKEN is not configured." } : {}),
+        });
       } catch (error) {
         return json({ configured: true, available: false, reason: String(error).slice(0, 180) });
       }
