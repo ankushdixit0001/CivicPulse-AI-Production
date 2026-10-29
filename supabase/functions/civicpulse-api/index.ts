@@ -294,16 +294,33 @@ Deno.serve(async (req: Request) => {
         if (issueError) throw new Error(issueError.message);
         if (!issue) return fail("Ticket not found.", 404);
         const verification = issue.ai_metadata?.resolution_verification;
-        if (!issue.after_image_path || verification?.status !== "success" || verification?.is_resolved !== true || Number(verification?.confidence || 0) < 0.85) {
-          return fail("AI verification has not passed the required confidence threshold. Review the evidence and keep the ticket open.", 409);
+        if (!issue.after_image_path) return fail("Upload an after-repair photo before confirming resolution.", 409);
+        const body = await req.json().catch(() => ({}));
+        const aiPassed = verification?.status === "success"
+          && verification?.is_resolved === true
+          && Number.isFinite(Number(verification?.confidence))
+          && Number(verification.confidence) >= 0.85;
+        const manualOverride = body.manual_override === true;
+        const reviewNote = String(body.review_note || "").trim().slice(0, 500);
+        if (!aiPassed && (!manualOverride || reviewNote.length < 10)) {
+          return fail("AI verification did not pass. A staff member must explicitly inspect the after photo and provide a review note to override it.", 409);
         }
         const now = new Date().toISOString();
         const { data, error } = await supabase.from("civic_issues").update({
           status: "Resolved", resolution_verified_at: now, resolved_at: now, assigned_to: auth.user.id,
         }).eq("id", issueId).select("*").single();
         if (error) throw new Error(error.message);
-        await addEvent(issueId, auth.user.id, "resolved", issue.status, "Resolved", "Staff confirmed AI-assisted repair verification", { confidence: verification.confidence, resolution_score: verification.resolution_score });
-        return json({ ticket: normalizeIssue(data), verified: true, staff_confirmed: true });
+        const eventNote = aiPassed
+          ? "Staff confirmed AI-assisted repair verification"
+          : "Staff manually overrode AI verification after inspecting repair evidence";
+        await addEvent(issueId, auth.user.id, "resolved", issue.status, "Resolved", eventNote, {
+          ai_verified: aiPassed,
+          manual_override: !aiPassed,
+          review_note: reviewNote || null,
+          confidence: verification?.confidence ?? null,
+          resolution_score: verification?.resolution_score ?? null,
+        });
+        return json({ ticket: normalizeIssue(data), verified: aiPassed, staff_confirmed: true, manual_override: !aiPassed });
       }
     }
 
