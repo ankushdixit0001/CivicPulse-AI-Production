@@ -46,9 +46,6 @@ jobs:
   frontend:
     name: Frontend production build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend-app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -60,11 +57,16 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend-app/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Verify frontend lockfile and install dependencies
+        run: |
+          test -f frontend-app/package-lock.json
+          cd frontend-app
+          npm ci
 
       - name: Build frontend
-        run: npm run build
+        run: |
+          cd frontend-app
+          npm run build
 
   edge-function:
     name: Supabase Edge Function type check
@@ -77,4 +79,4 @@ jobs:
         uses: denoland/setup-deno@v2
 
       - name: Check Edge Function
-        run: deno check supabase/functions/civicpulse-api/index.ts
+        run: deno check --node-modules-dir=auto supabase/functions/civicpulse-api/index.ts
