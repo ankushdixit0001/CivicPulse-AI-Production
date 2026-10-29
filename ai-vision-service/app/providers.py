@@ -284,9 +284,7 @@ def task_configured(task: str) -> bool:
 
 def task_recently_successful(task: str, max_age_seconds: int = 900) -> bool:
     now = time.time()
-    for name, state in _PROVIDER_STATE.items():
-        if state.get("last_success_task") != task or not state.get("last_success_at"):
-            continue
+    for state in _PROVIDER_STATE.values():
         timestamps = state.get("last_success_by_task") or {}
         timestamp = timestamps.get(task)
         if not timestamp:
