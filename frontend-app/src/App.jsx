@@ -388,6 +388,11 @@ function ReportPage() {
   const [locationResults, setLocationResults] = useState([]);
   const [searchingLocation, setSearchingLocation] = useState(false);
 
+  useEffect(() => {
+    if (!preview.startsWith('blob:')) return undefined;
+    return () => URL.revokeObjectURL(preview);
+  }, [preview]);
+
   const applyCameraOrFile = async (file) => {
     if (!file) return;
     setAnalysisResult(null);
@@ -398,10 +403,7 @@ function ReportPage() {
       const prepared = await prepareImageForUpload(file);
       setSelectedFile(prepared);
       const previewUrl = URL.createObjectURL(prepared);
-      setPreview((current) => {
-        if (current.startsWith('blob:')) URL.revokeObjectURL(current);
-        return previewUrl;
-      });
+      setPreview(previewUrl);
       setStatus('Photo ready. You can run AI analysis or submit the report.');
     } catch (error) {
       setStatus(error.message || 'Could not prepare this photo. Please try a smaller image.');
@@ -649,7 +651,7 @@ function ReportPage() {
             </div>
 
             <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden-input" onChange={handleFileChange} />
-            <input ref={galleryInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden-input" onChange={handleFileChange} />
+            <input ref={galleryInputRef} type="file" accept="image/*" className="hidden-input" onChange={handleFileChange} />
             {selectedFile && <p className="location-search-note">Selected photo: {selectedFile.name} · {(selectedFile.size / 1024).toFixed(0)} KB after compression</p>}
 
             <button type="button" className="analysis-btn" onClick={runAiAnalysis} disabled={analyzing || submitting || !preview}>
