@@ -22,6 +22,7 @@ A successful text chat probe does not prove image analysis or before/after compa
 |---|---|---|---|---|
 | Image classification and repair compare | Google Gemini API, configurable Flash-family model | Server-side Google AI Studio key | Official docs currently describe free access to selected models and multimodal use | Requires account/key; model availability, quotas and data terms vary |
 | Image classification and repair compare | Groq vision API, supported Qwen family | Server-side Groq API key | Official docs show image + text input, image/base64 examples and JSON response mode for supported models | Requires key; verify current availability, quotas and terms |
+| Image classification and repair compare | OpenAI vision API, model configured by environment | Server-side OpenAI API key | Official model docs list image input for supported models | Requires API credentials and billing; a ChatGPT subscription does not itself configure API access |
 | Text help assistant | llmfaucet anonymous gateway | None | No-key starting path, OpenAI-compatible format | Shared capacity; not proof of vision or production SLA |
 | Local image quality | OpenCV + Pillow | None | Deterministic image decoding, blur/brightness/contrast/resolution | Cannot identify civic defects by itself |
 | Object context | Existing YOLO COCO model if enabled | None for local inference | Supplemental object context | Not a validated pothole/garbage/sewage/streetlight detector |
@@ -37,8 +38,8 @@ Provider credentials must never be put in browser VITE_ variables. Store secrets
 
 Default order:
 
-- **vision analysis:** configured Gemini/Groq provider if enabled and verified → llmfaucet vision route only if image capability passes → local quality-only result.
-- **repair verification:** configured vision provider → llmfaucet only if two-image comparison is verified → unavailable/needs-human-review.
+- **vision analysis:** configured Gemini/Groq/OpenAI vision provider if enabled and verified → llmfaucet vision route only if image capability passes → local quality-only result.
+- **repair verification:** configured Gemini/Groq/OpenAI vision provider → llmfaucet only if two-image comparison is verified → unavailable/needs-human-review.
 - **chat:** configured text provider → llmfaucet chat → grounded rules-based civic help.
 - **image quality:** local OpenCV/Pillow, independent of generative AI.
 - **maps:** browser geolocation and manual pin work without AI or geocoding.
@@ -74,7 +75,8 @@ Classify failures as timeout, rate-limited, upstream unavailable, unsupported ca
 
 - llmfaucet API description and limitations: https://github.com/llmfaucet/llmfaucet
 - Gemini API models/pricing/free-tier terms: https://ai.google.dev/gemini-api/docs/pricing
-- Gemini 3 model guide: https://ai.google.dev/gemini-api/docs/gemini-3/
+- Gemini model guide: https://ai.google.dev/gemini-api/docs/models
+- OpenAI model capabilities: https://developers.openai.com/api/docs/models
 - Groq supported vision models and examples: https://console.groq.com/docs/vision
 - Groq key setup: https://console.groq.com/docs/quickstart
 - Supabase architecture: https://supabase.com/docs/guides/getting-started/architecture
