@@ -40,3 +40,18 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for the frontend/API/vision split, environm
 - Before/after image verification and review remain roadmap work.
 
 Never commit API keys, database passwords, Supabase service-role keys, or production environment files.
+
+## Architecture rebuild (in progress)
+
+The target production architecture keeps Supabase/Postgres/PostGIS as the single data source, the Supabase Edge Function as the public API/policy boundary, and the original FastAPI service as the single AI orchestration layer. The old Express/Mongoose API remains legacy and is not a production write path.
+
+Read the design before extending features:
+- [High-Level Design (HLD)](./docs/architecture/HLD.md)
+- [Low-Level Design (LLD) and API contracts](./docs/architecture/LLD.md)
+- [Database design and migration sequence](./docs/architecture/DATABASE_DESIGN.md)
+- [AI provider evaluation and privacy policy](./docs/architecture/AI_PROVIDER_MATRIX.md)
+- [Feature catalogue, priorities and release gates](./docs/architecture/FEATURE_CATALOGUE_AND_PLAN.md)
+
+The AI service now has a provider-adapter module for Gemini, OpenRouter, and the existing OpenAI-compatible API. External text/image processing defaults to **disabled** unless policy flags are explicitly enabled. Without an allowed provider, the service must return honest partial/unavailable results; local image-quality checks can still run. The app must never use a shared public bearer string as if it were an application credential.
+
+This is a staged rebuild. The architecture branch is not yet production-verified. Do not mark multimodal inference as working until the provider has been configured in the AI host, a non-personal test image has been analyzed successfully, repair comparison/chat have been exercised, and error/permission paths pass.

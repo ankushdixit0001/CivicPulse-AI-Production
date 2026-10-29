@@ -552,9 +552,46 @@ function ReportPage() {
     formData.append('status', 'Pending');
 
     setSubmitting(true);
-    setStatus('Submitting issue to AI triage engine...');
+    setStatus('Submitting report. AI analysis may be partial if the vision service is unavailable.');
 
+    let submissionFingerprint = '';
+    let submissionKey = '';
     try {
+      // Reuse one key when the same form is retried after a network/response failure.
+      // Store only a digest/fallback metadata in sessionStorage, never the description or photo.
+      try {
+        const fileDigest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+        const fileHash = Array.from(new Uint8Array(fileDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const payloadFingerprint = JSON.stringify({
+          defect_type: form.defect_type,
+          description: form.description.trim(),
+          landmark: form.landmark.trim(),
+          latitude: form.latitude,
+          longitude: form.longitude,
+          file_hash: fileHash,
+        });
+        const fingerprintDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payloadFingerprint));
+        submissionFingerprint = Array.from(new Uint8Array(fingerprintDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      } catch {
+        submissionFingerprint = `fallback:${form.defect_type}:${form.latitude}:${form.longitude}:${file.name}:${file.size}:${file.lastModified}:${form.description.trim().length}:${form.landmark.trim().length}`;
+      }
+      let pendingSubmission = null;
+      try { pendingSubmission = JSON.parse(sessionStorage.getItem('civicpulse_pending_report_submission') || 'null'); } catch { pendingSubmission = null; }
+      if (pendingSubmission?.fingerprint === submissionFingerprint && typeof pendingSubmission?.key === 'string') {
+        submissionKey = pendingSubmission.key;
+      } else {
+        submissionKey = typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        try {
+          sessionStorage.setItem('civicpulse_pending_report_submission', JSON.stringify({
+            fingerprint: submissionFingerprint,
+            key: submissionKey,
+          }));
+        } catch { /* Idempotency still works for this request if session storage is unavailable. */ }
+      }
+      formData.append('idempotency_key', submissionKey);
+
       let savedSession = null;
       try { savedSession = JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { savedSession = null; }
       const response = await fetch(`${apiBase}/api/tickets/report`, {
@@ -567,11 +604,17 @@ function ReportPage() {
       if (!response.ok) {
         throw new Error(result.message || 'Submission failed.');
       }
+      try {
+        const pendingSubmission = JSON.parse(sessionStorage.getItem('civicpulse_pending_report_submission') || 'null');
+        if (pendingSubmission?.key === submissionKey && pendingSubmission?.fingerprint === submissionFingerprint) {
+          sessionStorage.removeItem('civicpulse_pending_report_submission');
+        }
+      } catch { /* Session storage is optional; request persistence is handled by the API. */ }
 
       const ai = result?.ticket?.ai_metadata || {};
       const aiSummary = ai.summary || (result?.ai_status === 'success'
         ? 'AI triage completed; staff should review the result.'
-        : 'Issue saved. AI classification is limited until the vision model is configured.');
+        : 'Issue saved. AI classification is unavailable or partial; municipal staff can still review the saved report.');
       setStatus(`${result?.message || 'Ticket submitted successfully.'} AI triage: ${aiSummary}`);
       setTimeout(() => {
         window.location.href = '/command-center';
@@ -1128,12 +1171,27 @@ function CommandCenterPage() {
 
         {loadError && <div className="status-banner" role="alert">{loadError}</div>}
         <div className="status-banner" role="status" aria-live="polite">
-          <strong>AI vision: </strong>
-          {aiHealth?.available
-            ? (aiHealth.provider === 'llmfaucet'
-              ? 'Configured · free community AI for photo triage, chat, and repair comparison (shared capacity may be rate-limited).'
-              : (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add an AI provider key to enable defect reasoning.'))
-            : (aiHealth?.reason || 'Checking AI service configuration...')}
+          <strong>AI capabilities: </strong>
+          {!aiHealth
+            ? 'Checking provider status...'
+            : [
+                `Photo triage: ${aiHealth.defect_reasoning_available || aiHealth.available
+                  ? 'recently succeeded'
+                  : aiHealth.defect_reasoning_configured
+                    ? 'configured; no recent successful inference is confirmed'
+                    : 'unavailable; reports can still be submitted for manual review'}`,
+                `Help chat: ${aiHealth.chat_available
+                  ? 'recently succeeded'
+                  : aiHealth.chat_configured
+                    ? 'configured; no recent successful response is confirmed'
+                    : 'using the grounded help fallback'}`,
+                `Repair comparison: ${aiHealth.repair_verification_available
+                  ? 'recently succeeded'
+                  : aiHealth.repair_verification_configured
+                    ? 'configured; no recent successful comparison is confirmed'
+                    : 'unavailable; staff must review evidence manually'}`,
+              ].join(' · ')}
+          {aiHealth?.reason && !aiHealth?.available && <span> {aiHealth.reason}</span>}
         </div>
         {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
         {!loading && !loadError && tickets.length === 0 && <div className="status-banner">No civic reports yet. Submit a report to populate the command center.</div>}
