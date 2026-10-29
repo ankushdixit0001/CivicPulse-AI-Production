@@ -64,11 +64,11 @@ async function currentUser(req: Request) {
 }
 async function requireStaff(req: Request) {
   const user = await currentUser(req);
-  if (!user) return { error: "Sign in with an authorized staff account.", status: 401 as const };
+  if (!user) return { ok: false as const, error: "Sign in with an authorized staff account.", status: 401 as const };
   const { data: profile, error } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
-  if (error) return { error: "Could not verify staff permissions.", status: 500 as const };
-  if (!profile || !["staff", "admin"].includes(profile.role)) return { error: "Staff or admin role is required.", status: 403 as const };
-  return { user, role: profile.role };
+  if (error) return { ok: false as const, error: "Could not verify staff permissions.", status: 500 as const };
+  if (!profile || !["staff", "admin"].includes(profile.role)) return { ok: false as const, error: "Staff or admin role is required.", status: 403 as const };
+  return { ok: true as const, user, role: profile.role };
 }
 const FREE_AI_URL = "https://api.llmfaucet.dev/v1/chat/completions";
 const FREE_AI_MODEL = "auto:smart";
@@ -652,7 +652,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "PATCH" && action === "status") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const body = await req.json();
         const nextStatus = String(body.status || "");
         if (!allowedStatuses.has(nextStatus)) return fail("Invalid ticket status.");
@@ -667,7 +667,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "POST" && action === "resolve") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const form = await req.formData();
         const file = form.get("image");
         if (!(file instanceof File)) return fail("After-repair image is required.");
@@ -721,7 +721,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "POST" && action === "resolve/confirm") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const { data: issue, error: issueError } = await supabase.from("civic_issues").select("*").eq("id", issueId).maybeSingle();
         if (issueError) throw new Error(issueError.message);
         if (!issue) return fail("Ticket not found.", 404);
