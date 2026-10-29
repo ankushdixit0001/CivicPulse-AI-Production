@@ -143,6 +143,44 @@ create table if not exists public.staff_jurisdictions (
   primary key (staff_id, jurisdiction_id)
 );
 
+-- Optional jurisdiction binding; current issue writes may leave this NULL until
+-- municipal boundaries and assignment rules have been verified.
+alter table public.civic_issues
+  add column if not exists jurisdiction_id uuid
+  references public.jurisdictions(id) on delete set null;
+create index if not exists civic_issues_jurisdiction_status_idx
+  on public.civic_issues (jurisdiction_id, status, created_at desc);
+
+create table if not exists public.saved_searches (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null check (char_length(name) between 1 and 120),
+  filters jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint saved_searches_user_name_unique unique (user_id, name)
+);
+create index if not exists saved_searches_user_updated_idx
+  on public.saved_searches (user_id, updated_at desc);
+
+create table if not exists public.sla_policies (
+  id uuid primary key default gen_random_uuid(),
+  jurisdiction_id uuid null references public.jurisdictions(id) on delete set null,
+  defect_type text null check (defect_type is null or defect_type in
+    ('pothole', 'garbage', 'sewage', 'streetlight', 'unknown')),
+  severity text null check (severity is null or severity in ('LOW', 'MEDIUM', 'CRITICAL')),
+  first_response_minutes integer null check
+    (first_response_minutes is null or first_response_minutes > 0),
+  resolution_target_minutes integer null check
+    (resolution_target_minutes is null or resolution_target_minutes > 0),
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (first_response_minutes is not null or resolution_target_minutes is not null)
+);
+create index if not exists sla_policies_active_scope_idx
+  on public.sla_policies (active, jurisdiction_id, defect_type, severity);
+
 create table if not exists public.moderation_flags (
   id uuid primary key default gen_random_uuid(),
   issue_id uuid null references public.civic_issues(id) on delete cascade,
