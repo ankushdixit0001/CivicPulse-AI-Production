@@ -64,6 +64,26 @@ class VisionNormalizationTests(unittest.TestCase):
         }, "pothole", poor_quality)
         self.assertTrue(result["human_review_required"])
 
+    def test_non_finite_confidence_defaults_to_zero(self):
+        result = main._normalise_analysis({
+            "confidence": float("nan"),
+            "damage_coverage_pct": float("inf"),
+            "priority_score": float("nan"),
+        }, "pothole", self.quality)
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertEqual(result["damage_coverage_pct"], 0.0)
+        self.assertEqual(result["priority_score"], 0.0)
+
+    def test_non_finite_damage_does_not_escalate_priority(self):
+        result = main._priority_from_ai({
+            "defect_type": "pothole",
+            "damage_coverage_pct": float("nan"),
+            "confidence": float("inf"),
+        }, "pothole")
+        self.assertEqual(result["priority_score"], 0.0)
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertEqual(result["severity"], "LOW")
+
     def test_category_is_sanitized(self):
         result = main._normalise_analysis({
             "defect_type": "made-up-category",
