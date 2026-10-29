@@ -14,7 +14,10 @@ import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 try:
+    try:
     from ultralytics import YOLO
+except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
+    YOLO = None
 except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
     YOLO = None
 
