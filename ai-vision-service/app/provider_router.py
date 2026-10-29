@@ -94,7 +94,7 @@ def configured_providers() -> List[ProviderConfig]:
 
     priority = [
         item.strip().lower()
-        for item in os.getenv("AI_PROVIDER_ORDER", "gemini,groq,llmfaucet,openai").split(",")
+        for item in os.getenv("AI_PROVIDER_ORDER", "gemini,groq,openai,llmfaucet").split(",")
         if item.strip()
     ]
     priority_index = {provider_id: index for index, provider_id in enumerate(priority)}
