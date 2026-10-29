@@ -50,7 +50,11 @@ async function analyze(file: File, defectType: string) {
   try {
     const form = new FormData();
     form.append("file", file, file.name || "issue.jpg");
-    const response = await fetch(`${AI_SERVICE_URL}/analyze`, { method: "POST", body: form, signal: AbortSignal.timeout(25000) });
+    form.append("defect_type", defectType);
+    const headers: Record<string, string> = {};
+    const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
+    if (aiToken) headers["x-civicpulse-ai-token"] = aiToken;
+    const response = await fetch(`${AI_SERVICE_URL}/analyze`, { method: "POST", headers, body: form, signal: AbortSignal.timeout(45000) });
     if (!response.ok) throw new Error(`AI service returned ${response.status}`);
     return await response.json();
   } catch (error) {
@@ -113,7 +117,7 @@ Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
   const path = url.pathname.replace(/\/+$/, "");
   try {
-    if (path.endsWith("/health") || path.endsWith("/api/health")) return json({ status: "ok", service: "CivicPulse API", database: "supabase" });
+    if (path.endsWith("/health") || path.endsWith("/api/health")) return json({ status: "ok", service: "CivicPulse API", database: "supabase", ai_configured: Boolean(AI_SERVICE_URL) });
 
     if (req.method === "GET" && (path.endsWith("/api/me") || path.endsWith("/me"))) {
       const user = await currentUser(req);
@@ -239,7 +243,10 @@ Deno.serve(async (req: Request) => {
             const verifyForm = new FormData();
             verifyForm.append("before", beforeBlob, "before.jpg");
             verifyForm.append("after", file, file.name || "after.jpg");
-            const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", body: verifyForm, signal: AbortSignal.timeout(30000) });
+            const aiHeaders: Record<string, string> = {};
+            const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
+            if (aiToken) aiHeaders["x-civicpulse-ai-token"] = aiToken;
+            const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
             if (!response.ok) throw new Error("AI verification service failed.");
             verification = await response.json();
           } catch (error) { verification = { status: "unavailable", is_resolved: false, reason: String(error) }; }
