@@ -554,7 +554,44 @@ function ReportPage() {
     setSubmitting(true);
     setStatus('Submitting issue to AI triage engine...');
 
+    let submissionFingerprint = '';
+    let submissionKey = '';
     try {
+      // Reuse one key when the same form is retried after a network/response failure.
+      // Store only a digest/fallback metadata in sessionStorage, never the description or photo.
+      try {
+        const fileDigest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+        const fileHash = Array.from(new Uint8Array(fileDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const payloadFingerprint = JSON.stringify({
+          defect_type: form.defect_type,
+          description: form.description.trim(),
+          landmark: form.landmark.trim(),
+          latitude: form.latitude,
+          longitude: form.longitude,
+          file_hash: fileHash,
+        });
+        const fingerprintDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payloadFingerprint));
+        submissionFingerprint = Array.from(new Uint8Array(fingerprintDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      } catch {
+        submissionFingerprint = `fallback:${form.defect_type}:${form.latitude}:${form.longitude}:${file.name}:${file.size}:${file.lastModified}:${form.description.trim().length}:${form.landmark.trim().length}`;
+      }
+      let pendingSubmission = null;
+      try { pendingSubmission = JSON.parse(sessionStorage.getItem('civicpulse_pending_report_submission') || 'null'); } catch { pendingSubmission = null; }
+      if (pendingSubmission?.fingerprint === submissionFingerprint && typeof pendingSubmission?.key === 'string') {
+        submissionKey = pendingSubmission.key;
+      } else {
+        submissionKey = typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        try {
+          sessionStorage.setItem('civicpulse_pending_report_submission', JSON.stringify({
+            fingerprint: submissionFingerprint,
+            key: submissionKey,
+          }));
+        } catch { /* Idempotency still works for this request if session storage is unavailable. */ }
+      }
+      formData.append('idempotency_key', submissionKey);
+
       let savedSession = null;
       try { savedSession = JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { savedSession = null; }
       const response = await fetch(`${apiBase}/api/tickets/report`, {
@@ -567,6 +604,12 @@ function ReportPage() {
       if (!response.ok) {
         throw new Error(result.message || 'Submission failed.');
       }
+      try {
+        const pendingSubmission = JSON.parse(sessionStorage.getItem('civicpulse_pending_report_submission') || 'null');
+        if (pendingSubmission?.key === submissionKey && pendingSubmission?.fingerprint === submissionFingerprint) {
+          sessionStorage.removeItem('civicpulse_pending_report_submission');
+        }
+      } catch { /* Session storage is optional; request persistence is handled by the API. */ }
 
       const ai = result?.ticket?.ai_metadata || {};
       const aiSummary = ai.summary || (result?.ai_status === 'success'
