@@ -1,244 +1,379 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
+import json
 import math
-from typing import Any, Dict, List, Tuple
+import os
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import httpx
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from PIL import Image
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from PIL import Image, ImageOps, UnidentifiedImageError
 from ultralytics import YOLO
 
 APP_TITLE = "CivicPulse AI Vision Service"
-CATEGORY_WEIGHTS = {
-    "pothole": 1.2,
-    "garbage": 1.1,
-    "sewage": 1.5,
-    "streetlight": 1.0,
-    "unknown": 1.0,
-}
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_SIDE = 6000
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip()
+VISION_API_TOKEN = os.getenv("VISION_API_TOKEN", "").strip()
+CATEGORY_WEIGHTS = {"pothole": 1.2, "garbage": 1.1, "sewage": 1.5, "streetlight": 1.0, "unknown": 1.0}
+ALLOWED_CATEGORIES = set(CATEGORY_WEIGHTS)
+app = FastAPI(title=APP_TITLE, version="2.0.0")
 
-app = FastAPI(title=APP_TITLE)
-
+# COCO YOLO is used only for generic object context. It is NOT a civic-defect model.
 try:
-    model = YOLO("yolov8n.pt")
-except Exception:  # pragma: no cover - allows local dev without a downloaded model
+    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
+except Exception:
     model = None
 
 
-def to_ascii_label(label: str) -> str:
-    return label.lower().replace(" ", "_").replace("-", "_")
+def _check_token(token: Optional[str]) -> None:
+    if VISION_API_TOKEN and token != VISION_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid vision-service token.")
 
 
-def extract_exif_metadata(image: Image.Image) -> Dict[str, Any]:
-    exif = image.getexif()
-    exif_data: Dict[str, Any] = {}
-    gps_data = exif.get_ifd(34853) if hasattr(exif, "get_ifd") else {}
-
-    if gps_data:
-        latitude = gps_data.get(2)
-        longitude = gps_data.get(4)
-        altitude = gps_data.get(6)
-        timestamp = gps_data.get(7)
-
-        if latitude and longitude:
-            exif_data["gps"] = {
-                "latitude": _dms_to_decimal(latitude),
-                "longitude": _dms_to_decimal(longitude),
-                "altitude": altitude,
-                "timestamp": timestamp,
-            }
-
-    for tag, value in exif.items():
-        if tag in {36867, 306, 36868, 34853}:
-            exif_data[str(tag)] = value
-
-    return exif_data
+def _load_image(data: bytes) -> Tuple[Image.Image, np.ndarray]:
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image must be between 1 byte and 8 MB.")
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.verify()
+        image = Image.open(io.BytesIO(data))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.") from exc
+    if image.width > MAX_IMAGE_SIDE or image.height > MAX_IMAGE_SIDE:
+        raise HTTPException(status_code=400, detail="Image dimensions must be 6000 x 6000 pixels or smaller.")
+    array = np.asarray(image)
+    return image, cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _dms_to_decimal(data: Any) -> float:
-    if not isinstance(data, tuple) or len(data) != 3:
-        return 0.0
-    degrees, minutes, seconds = data
-    return float(degrees) + (float(minutes) / 60.0) + (float(seconds) / 3600.0)
+def _data_url(image: Image.Image) -> str:
+    output = io.BytesIO()
+    image.save(output, format="JPEG", quality=88, optimize=True)
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return "data:image/jpeg;base64," + encoded
 
 
-def compute_laplacian_variance(image_array: np.ndarray) -> float:
-    gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+def _parse_json_content(content: str) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(content)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Vision model returned invalid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Vision model returned an unexpected response.")
+    return parsed
 
 
-def compute_bbox_area(box: List[float], width: int, height: int) -> float:
-    x1, y1, x2, y2 = box
-    width_pixels = max(0.0, x2 - x1)
-    height_pixels = max(0.0, y2 - y1)
-    return max(0.0, width_pixels * height_pixels)
+async def _openai_vision(messages: List[Dict[str, Any]], max_tokens: int = 900) -> Dict[str, Any]:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": OPENAI_MODEL,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"},
+                "messages": messages,
+            },
+        )
+    if response.status_code >= 400:
+        # Avoid returning provider response bodies that may contain operational details.
+        raise RuntimeError(f"Vision provider returned HTTP {response.status_code}")
+    payload = response.json()
+    content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return _parse_json_content(content)
 
 
-def compute_damage_coverage(boxes: List[List[float]], width: int, height: int) -> float:
-    if not boxes:
-        return 0.0
-    total = 0.0
-    for box in boxes:
-        total += compute_bbox_area(box, width, height)
-    frame_area = max(1.0, width * height)
-    return min(100.0, (total / frame_area) * 100.0)
-
-
-def infer_defect_type(boxes: List[Dict[str, Any]], fallback: str = "unknown") -> str:
-    if not boxes:
-        return fallback
-    labels = [box.get("class_name") or box.get("label") or fallback for box in boxes]
-    name = labels[0].lower()
-    return to_ascii_label(name) if name else fallback
-
-
-def classify_severity(score: float) -> str:
-    if score >= 75:
-        return "CRITICAL"
-    if score >= 35:
-        return "MEDIUM"
-    return "LOW"
-
-
-def compute_priority_score(damage_percent: float, category: str, severity_factor: float = 1.0) -> float:
-    weight = CATEGORY_WEIGHTS.get(category.lower(), CATEGORY_WEIGHTS["unknown"])
-    score = damage_percent * weight * severity_factor
-    return round(min(100.0, max(1.0, score)), 2)
-
-
-def fallback_detection(image_array: np.ndarray) -> List[Dict[str, Any]]:
-    height, width = image_array.shape[:2]
-    center_x, center_y = width / 2, height / 2
-    box_size = min(width, height) * 0.32
-    x1 = max(0, center_x - box_size / 2)
-    y1 = max(0, center_y - box_size / 2)
-    x2 = min(width, center_x + box_size / 2)
-    y2 = min(height, center_y + box_size / 2)
-    return [{
-        "class_name": "pothole",
-        "confidence": 0.81,
-        "bbox": [float(x1), float(y1), float(x2), float(y2)],
-    }]
-
-
-def extract_model_detections(image_array: np.ndarray) -> List[Dict[str, Any]]:
-    if model is None:
-        return fallback_detection(image_array)
-
-    results = model(image_array, conf=0.25, verbose=False)
-    boxes: List[Dict[str, Any]] = []
-    for result in results:
-        for box in result.boxes:
-            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
-            cls = result.names.get(int(box.cls[0]), "unknown")
-            boxes.append({
-                "class_name": cls,
-                "confidence": float(box.conf[0]),
-                "bbox": [x1, y1, x2, y2],
-            })
-    if not boxes:
-        return fallback_detection(image_array)
-    return boxes
-
-
-def compute_ssim_score(before: np.ndarray, after: np.ndarray) -> float:
-    if before.shape != after.shape:
-        before = cv2.resize(before, (after.shape[1], after.shape[0]))
-    gray_a = cv2.cvtColor(before, cv2.COLOR_BGR2GRAY)
-    gray_b = cv2.cvtColor(after, cv2.COLOR_BGR2GRAY)
-    mu_a = cv2.GaussianBlur(gray_a, (11, 11), 1.5)
-    mu_b = cv2.GaussianBlur(gray_b, (11, 11), 1.5)
-    sigma_a = cv2.GaussianBlur(gray_a * gray_a, (11, 11), 1.5) - (mu_a * mu_a)
-    sigma_b = cv2.GaussianBlur(gray_b * gray_b, (11, 11), 1.5) - (mu_b * mu_b)
-    sigma_ab = cv2.GaussianBlur(gray_a * gray_b, (11, 11), 1.5) - (mu_a * mu_b)
-    c1, c2 = 6.5025, 58.5225
-    ssim_map = ((2 * mu_a * mu_b + c1) * (2 * sigma_ab + c2)) / ((mu_a * mu_a + mu_b * mu_b + c1) * (sigma_a + sigma_b + c2))
-    return float(np.mean(ssim_map))
-
-
-@app.get("/health")
-def healthcheck() -> Dict[str, str]:
-    return {"status": "ok", "service": APP_TITLE}
-
-
-@app.post("/analyze")
-async def analyze_issue(file: UploadFile = File(...)) -> Dict[str, Any]:
-    if not file.content_type or "image" not in file.content_type:
-        raise HTTPException(status_code=400, detail="Please upload an image file.")
-
-    image_bytes = await file.read()
-    image_stream = io.BytesIO(image_bytes)
-    image = Image.open(image_stream)
-    image = image.convert("RGB")
-    image_array = np.array(image)
-    image_array_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-
-    boxes = extract_model_detections(image_array_bgr)
-    damage_coverage = compute_damage_coverage([box["bbox"] for box in boxes], image_array.shape[1], image_array.shape[0])
-    defect_type = infer_defect_type(boxes, "unknown")
-    confidence = max(float(box["confidence"]) for box in boxes) if boxes else 0.0
-    priority_score = compute_priority_score(damage_coverage, defect_type, 1.0 + (confidence * 0.8))
-    variance = compute_laplacian_variance(image_array_bgr)
-    is_blurry = variance < 100.0
-
+def _quality_metrics(image_bgr: np.ndarray) -> Dict[str, Any]:
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    height, width = gray.shape
+    issues: List[str] = []
+    if min(width, height) < 320:
+        issues.append("low_resolution")
+    if blur_score < 70:
+        issues.append("blurry")
+    if brightness < 45:
+        issues.append("too_dark")
+    elif brightness > 220:
+        issues.append("overexposed")
+    if contrast < 18:
+        issues.append("low_contrast")
+    quality = "good" if not issues else ("poor" if len(issues) >= 2 else "review")
     return {
-        "status": "success",
-        "defect_type": defect_type,
-        "confidence": round(confidence, 3),
-        "severity": classify_severity(priority_score),
-        "priority_score": round(priority_score, 2),
-        "damage_coverage_pct": round(damage_coverage, 2),
-        "blurry": is_blurry,
-        "laplacian_variance": round(variance, 2),
-        "metadata": extract_exif_metadata(image),
-        "bounding_boxes": [{
-            "label": box["class_name"],
-            "confidence": round(float(box["confidence"]), 3),
-            "bbox": [
-                round(float(box["bbox"][0]), 2),
-                round(float(box["bbox"][1]), 2),
-                round(float(box["bbox"][2]), 2),
-                round(float(box["bbox"][3]), 2),
-            ],
-        } for box in boxes],
+        "width": int(width),
+        "height": int(height),
+        "blur_score": round(blur_score, 2),
+        "brightness": round(brightness, 2),
+        "contrast": round(contrast, 2),
+        "quality": quality,
+        "quality_flags": issues,
     }
 
 
-@app.post("/verify-resolution")
-async def verify_resolution(before: UploadFile = File(...), after: UploadFile = File(...)) -> Dict[str, Any]:
-    before_bytes = await before.read()
-    after_bytes = await after.read()
+def _generic_objects(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
+    if model is None:
+        return []
+    try:
+        results = model(image_bgr, conf=0.3, verbose=False)
+    except Exception:
+        return []
+    objects: List[Dict[str, Any]] = []
+    for result in results:
+        for box in result.boxes:
+            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
+            objects.append({
+                "label": str(result.names.get(int(box.cls[0]), "object")),
+                "confidence": round(float(box.conf[0]), 3),
+                "bbox": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)],
+            })
+    return sorted(objects, key=lambda item: item["confidence"], reverse=True)[:30]
 
-    before_image = Image.open(io.BytesIO(before_bytes)).convert("RGB")
-    after_image = Image.open(io.BytesIO(after_bytes)).convert("RGB")
-    before_array = np.array(before_image)
-    after_array = np.array(after_image)
 
-    before_bgr = cv2.cvtColor(before_array, cv2.COLOR_RGB2BGR)
-    after_bgr = cv2.cvtColor(after_array, cv2.COLOR_RGB2BGR)
-
-    before_detections = extract_model_detections(before_bgr)
-    after_detections = extract_model_detections(after_bgr)
-    before_boxes = [box["bbox"] for box in before_detections]
-    after_boxes = [box["bbox"] for box in after_detections]
-
-    before_area = compute_damage_coverage(before_boxes, before_array.shape[1], before_array.shape[0])
-    after_area = compute_damage_coverage(after_boxes, after_array.shape[1], after_array.shape[0])
-    area_reduction = max(0.0, before_area - after_area)
-    ssim_score = compute_ssim_score(before_bgr, after_bgr)
-    resolution_score = round((ssim_score * 0.65) + (area_reduction / max(1.0, before_area + 1.0)) * 100.0 * 0.35, 2)
-    is_resolved = resolution_score >= 72.0 and area_reduction >= 20.0
-
+def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality: Dict[str, Any]) -> Dict[str, Any]:
+    category = str(result.get("defect_type", requested_category)).lower().strip()
+    if category not in ALLOWED_CATEGORIES:
+        category = "unknown"
+    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
+    damage = max(0.0, min(100.0, float(result.get("damage_coverage_pct", 0) or 0)))
+    score = max(0.0, min(100.0, float(result.get("priority_score", 0) or 0)))
+    severity = str(result.get("severity", "LOW")).upper()
+    if severity not in {"LOW", "MEDIUM", "CRITICAL"}:
+        severity = "LOW"
+    boxes = result.get("bounding_boxes", [])
+    if not isinstance(boxes, list):
+        boxes = []
+    clean_boxes = []
+    for item in boxes[:30]:
+        if not isinstance(item, dict):
+            continue
+        bbox = item.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        try:
+            coords = [max(0.0, min(1.0, float(value))) for value in bbox]
+            # Model prompt returns normalized 0..1000 coordinates.
+            if max(coords) > 1:
+                coords = [value / 1000.0 for value in coords]
+            clean_boxes.append({
+                "label": str(item.get("label", "damage"))[:80],
+                "confidence": round(max(0.0, min(1.0, float(item.get("confidence", confidence)))), 3),
+                "bbox": coords,
+            })
+        except (TypeError, ValueError):
+            continue
     return {
         "status": "success",
-        "is_resolved": is_resolved,
-        "resolution_score": resolution_score,
-        "ssim_score": round(ssim_score, 4),
-        "before_damage_pct": round(before_area, 2),
-        "after_damage_pct": round(after_area, 2),
-        "area_reduction_pct": round(area_reduction, 2),
-        "before_boxes": before_boxes,
-        "after_boxes": after_boxes,
+        "model": OPENAI_MODEL,
+        "model_source": "openai_vision",
+        "defect_type": category,
+        "confidence": round(confidence, 3),
+        "severity": severity,
+        "priority_score": round(score, 2),
+        "damage_coverage_pct": round(damage, 2),
+        "summary": str(result.get("summary", ""))[:500],
+        "visible_evidence": [str(x)[:180] for x in result.get("visible_evidence", [])[:8] if isinstance(x, str)],
+        "recommended_action": str(result.get("recommended_action", "Manual inspection recommended."))[:500],
+        "human_review_required": bool(result.get("human_review_required", confidence < 0.75 or quality["quality"] != "good")),
+        "bounding_boxes": clean_boxes,
+        "image_quality": quality,
+        "limitations": ["AI output is an estimate; a city employee must confirm the defect and priority."],
+    }
+
+
+def _fallback_analysis(requested_category: str, quality: Dict[str, Any], objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+    # No fake defect boxes or invented confidence: generic COCO detections cannot prove civic damage.
+    return {
+        "status": "partial",
+        "model": "yolov8n-coco" if model is not None else "opencv-quality-checks",
+        "model_source": "generic_object_context" if model is not None else "computer_vision_quality_only",
+        "defect_type": requested_category,
+        "confidence": 0.0,
+        "severity": "LOW",
+        "priority_score": 0,
+        "damage_coverage_pct": 0,
+        "summary": "Civic-defect classification is unavailable. Image quality checks completed; the selected category has not been independently verified.",
+        "visible_evidence": [],
+        "recommended_action": "Review the photo and issue description manually. Configure OPENAI_API_KEY for defect-specific visual reasoning.",
+        "human_review_required": True,
+        "bounding_boxes": [],
+        "generic_objects": objects,
+        "image_quality": quality,
+        "limitations": ["Generic YOLO object detection is not trained to identify potholes, sewage, or broken streetlights."],
+    }
+
+
+def _priority_from_ai(result: Dict[str, Any], requested_category: str) -> Dict[str, Any]:
+    category = str(result.get("defect_type", requested_category)).lower()
+    if category not in ALLOWED_CATEGORIES:
+        category = requested_category
+    damage = max(0.0, min(100.0, float(result.get("damage_coverage_pct", 0) or 0)))
+    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
+    # Keep urgency separate from confidence. Never boost an issue solely because the model is confident.
+    weight = CATEGORY_WEIGHTS.get(category, 1.0)
+    priority = min(100.0, damage * weight + (15.0 if category == "sewage" else 0.0))
+    if result.get("safety_risk") is True:
+        priority = max(priority, 75.0)
+    severity = "CRITICAL" if priority >= 75 else "MEDIUM" if priority >= 35 else "LOW"
+    return {"defect_type": category, "confidence": confidence, "damage_coverage_pct": damage,
+            "priority_score": round(priority, 2), "severity": severity}
+
+
+def _normalise_boxes(boxes: Any) -> List[Dict[str, Any]]:
+    if not isinstance(boxes, list):
+        return []
+    clean = []
+    for item in boxes[:30]:
+        if not isinstance(item, dict) or not isinstance(item.get("bbox"), list) or len(item["bbox"]) != 4:
+            continue
+        try:
+            coords = [max(0.0, min(1000.0, float(value))) for value in item["bbox"]]
+            clean.append({"label": str(item.get("label", "damage"))[:80],
+                          "confidence": round(max(0.0, min(1.0, float(item.get("confidence", 0) or 0))), 3),
+                          "bbox": coords})
+        except (TypeError, ValueError):
+            continue
+    return clean
+
+
+@app.get("/health")
+def healthcheck() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": APP_TITLE,
+        "version": "2.0.0",
+        "generic_detector_loaded": model is not None,
+        "defect_reasoning_configured": bool(OPENAI_API_KEY),
+        "repair_verification_configured": bool(OPENAI_API_KEY),
+    }
+
+
+@app.post("/analyze")
+async def analyze_issue(
+    file: UploadFile = File(...),
+    defect_type: str = Form("unknown"),
+    x_civicpulse_ai_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _check_token(x_civicpulse_ai_token)
+    category = defect_type.strip().lower()
+    if category not in ALLOWED_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Unsupported defect category.")
+    raw = await file.read(MAX_IMAGE_BYTES + 1)
+    image, image_bgr = _load_image(raw)
+    quality = _quality_metrics(image_bgr)
+    objects = _generic_objects(image_bgr)
+
+    if OPENAI_API_KEY:
+        prompt = (
+            "You are a conservative civic-infrastructure photo triage assistant. Inspect the supplied photo for the selected category: "
+            + category
+            + ". Do not infer damage that is not visible. If the image does not clearly show the selected category, return defect_type='unknown' "
+            "and low confidence. This is triage, not a final municipal decision. Do not use EXIF or assume location. "
+            "Return ONLY JSON with keys: defect_type (pothole|garbage|sewage|streetlight|unknown), confidence (0..1), "
+            "damage_coverage_pct (0..100), safety_risk (boolean), summary (short), visible_evidence (array of short strings), "
+            "recommended_action (short), human_review_required (boolean), bounding_boxes (array of {label,confidence,bbox}). "
+            "bbox must be [x1,y1,x2,y2] in normalized 0..1000 coordinates. Only include boxes for visible issue evidence. "
+            "priority is not supplied; compute it in the server. If uncertain, use confidence below 0.6 and require human review."
+        )
+        try:
+            result = await _openai_vision([{
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": _data_url(image), "detail": "high"}}],
+            }])
+            priority = _priority_from_ai(result, category)
+            result.update(priority)
+            normalised = _normalise_analysis(result, category, quality)
+            normalised["generic_objects"] = objects
+            normalised["image_quality"]["quality_flags"] = quality["quality_flags"]
+            return normalised
+        except Exception as exc:
+            # Do not silently turn a provider failure into a positive damage classification.
+            fallback = _fallback_analysis(category, quality, objects)
+            fallback["provider_error"] = str(exc)[:160]
+            return fallback
+
+    return _fallback_analysis(category, quality, objects)
+
+
+@app.post("/verify-resolution")
+async def verify_resolution(
+    before: UploadFile = File(...),
+    after: UploadFile = File(...),
+    x_civicpulse_ai_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _check_token(x_civicpulse_ai_token)
+    before_raw = await before.read(MAX_IMAGE_BYTES + 1)
+    after_raw = await after.read(MAX_IMAGE_BYTES + 1)
+    before_image, before_bgr = _load_image(before_raw)
+    after_image, after_bgr = _load_image(after_raw)
+    before_quality = _quality_metrics(before_bgr)
+    after_quality = _quality_metrics(after_bgr)
+    if not OPENAI_API_KEY:
+        return {
+            "status": "unavailable",
+            "is_resolved": False,
+            "resolution_score": 0,
+            "before_image_quality": before_quality,
+            "after_image_quality": after_quality,
+            "reason": "OPENAI_API_KEY is not configured; automated repair verification is disabled.",
+            "human_review_required": True,
+        }
+
+    prompt = (
+        "Compare the BEFORE and AFTER photos of the same reported civic issue. Decide whether the visible defect is convincingly repaired. "
+        "Do not infer repair merely because the images differ, camera angle/lighting changed, or the defect is not visible in the after photo. "
+        "If photos do not show comparable scenes or evidence is ambiguous, is_resolved must be false. A human municipal reviewer has final authority. "
+        "Return ONLY JSON with keys: is_resolved (boolean), confidence (0..1), resolution_score (0..100), before_damage_pct (0..100), "
+        "after_damage_pct (0..100), visible_change (short), evidence (array of short strings), human_review_required (boolean). "
+        "Only set is_resolved true when the defect appears clearly repaired and confidence >= 0.85."
+    )
+    try:
+        result = await _openai_vision([{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "text", "text": "BEFORE photo:"},
+                {"type": "image_url", "image_url": {"url": _data_url(before_image), "detail": "high"}},
+                {"type": "text", "text": "AFTER photo:"},
+                {"type": "image_url", "image_url": {"url": _data_url(after_image), "detail": "high"}},
+            ],
+        }], max_tokens=700)
+    except Exception as exc:
+        return {
+            "status": "unavailable", "is_resolved": False, "resolution_score": 0,
+            "before_image_quality": before_quality, "after_image_quality": after_quality,
+            "reason": str(exc)[:160], "human_review_required": True,
+        }
+
+    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
+    score = max(0.0, min(100.0, float(result.get("resolution_score", 0) or 0)))
+    before_damage = max(0.0, min(100.0, float(result.get("before_damage_pct", 0) or 0)))
+    after_damage = max(0.0, min(100.0, float(result.get("after_damage_pct", 0) or 0)))
+    # A model verdict is evidence for staff, not sole legal/operational authority.
+    verified = bool(result.get("is_resolved") is True and confidence >= 0.85 and score >= 85
+                     and before_quality["quality"] != "poor" and after_quality["quality"] != "poor")
+    return {
+        "status": "success",
+        "is_resolved": verified,
+        "confidence": round(confidence, 3),
+        "resolution_score": round(score, 2),
+        "before_damage_pct": round(before_damage, 2),
+        "after_damage_pct": round(after_damage, 2),
+        "visible_change": str(result.get("visible_change", ""))[:500],
+        "evidence": [str(x)[:180] for x in result.get("evidence", [])[:8] if isinstance(x, str)],
+        "before_image_quality": before_quality,
+        "after_image_quality": after_quality,
+        "human_review_required": not verified or bool(result.get("human_review_required", True)),
+        "limitations": ["AI comparison is assistive evidence; staff must inspect the photos and confirm the repair."],
     }
