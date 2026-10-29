@@ -103,13 +103,13 @@ flowchart TD
 ### Report intake
 
 1. Resident chooses GPS or a manual map point, adds category, description and photo.
-2. Browser resizes photo and sends multipart data with idempotency key.
+2. Browser resizes photo and sends multipart data with an idempotency key.
 3. API validates input, image signature, size, coordinates and rate limits.
-4. API stores the image and invokes AI with an independent timeout.
-5. AI runs local quality checks and attempts a verified vision provider.
-6. API performs same-category PostGIS duplicate lookup. A transactional operation merges or creates the issue.
-7. API writes an audit event and returns explicit AI status: success, partial or unavailable.
-8. AI outage does not discard a valid report; no classification is fabricated.
+4. API stores the image and writes the report with a safe baseline triage state through the create-or-merge RPC.
+5. If the report merges into an existing issue, the unused new image is cleaned up and AI is not run against an image that the canonical issue does not store.
+6. If a new issue is created, the API returns promptly with `ai_status=pending` and schedules analysis with `EdgeRuntime.waitUntil`.
+7. The AI service runs local quality checks and attempts a verified provider; validated results update the saved issue and append an audit event.
+8. Provider failure leaves the report saved for staff review. No category or confidence is fabricated.
 
 ### Repair verification
 
