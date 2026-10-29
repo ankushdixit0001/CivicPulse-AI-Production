@@ -668,6 +668,7 @@ function ReportPage() {
 function CommandCenterPage() {
   const [tickets, setTickets] = useState([]);
   const [loadError, setLoadError] = useState('');
+  const [aiHealth, setAiHealth] = useState(null);
   const [activeFilter, setActiveFilter] = useState('All statuses');
   const [activeDefectFilter, setActiveDefectFilter] = useState('All defects');
   const [authEmail, setAuthEmail] = useState('');
@@ -702,9 +703,20 @@ function CommandCenterPage() {
       }
     };
 
+    const loadAiHealth = async () => {
+      try {
+        const response = await fetch(`${apiBase}/api/ai/health`);
+        const health = await response.json();
+        setAiHealth(health);
+      } catch {
+        setAiHealth({ configured: false, available: false, reason: 'AI health check failed.' });
+      }
+    };
     loadTickets();
+    loadAiHealth();
     const refresh = window.setInterval(loadTickets, 10000);
-    return () => window.clearInterval(refresh);
+    const aiRefresh = window.setInterval(loadAiHealth, 30000);
+    return () => { window.clearInterval(refresh); window.clearInterval(aiRefresh); };
   }, []);
 
   useEffect(() => {
@@ -974,6 +986,12 @@ function CommandCenterPage() {
         </div>
 
         {loadError && <div className="status-banner" role="alert">{loadError}</div>}
+        <div className="status-banner" role="status" aria-live="polite">
+          <strong>AI vision: </strong>
+          {aiHealth?.available
+            ? (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add the OpenAI API key to enable defect reasoning.')
+            : (aiHealth?.reason || 'Checking AI service configuration...')}
+        </div>
         {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
         {!loading && !loadError && tickets.length === 0 && <div className="status-banner">No civic reports yet. Submit a report to populate the command center.</div>}
         <div className="stats-grid">
