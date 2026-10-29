@@ -1130,7 +1130,9 @@ function CommandCenterPage() {
         <div className="status-banner" role="status" aria-live="polite">
           <strong>AI vision: </strong>
           {aiHealth?.available
-            ? (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add the OpenAI API key to enable defect reasoning.')
+            ? (aiHealth.provider === 'llmfaucet'
+              ? 'Configured · free community AI for photo triage, chat, and repair comparison (shared capacity may be rate-limited).'
+              : (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add an AI provider key to enable defect reasoning.'))
             : (aiHealth?.reason || 'Checking AI service configuration...')}
         </div>
         {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
