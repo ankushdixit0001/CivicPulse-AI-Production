@@ -115,6 +115,20 @@ async function consumeReportLimit(req: Request, userId: string | null) {
   if (error) throw new Error("Could not validate report rate limit: " + error.message);
   return data === true;
 }
+async function consumeAiAnalysisLimit(req: Request, userId: string | null) {
+  const forwarded = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const identity = userId ? `ai:user:${userId}` : `ai:ip:${forwarded}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+  const key = Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
+  const { data, error } = await supabase.rpc("consume_civic_report_limit", {
+    p_bucket_key: key,
+    p_limit: 20,
+    p_window_seconds: 3600,
+  });
+  if (error) throw new Error("Could not validate AI analysis rate limit: " + error.message);
+  return data === true;
+}
+
 async function listIssues(url: URL) {
   const status = url.searchParams.get("status");
   const zone = url.searchParams.get("zone");
@@ -178,6 +192,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (req.method === "POST" && (path.endsWith("/api/ai/analyze") || path.endsWith("/ai/analyze"))) {
+      const user = await currentUser(req);
+      if (!(await consumeAiAnalysisLimit(req, user?.id || null))) return fail("AI analysis limit reached. Try again later (maximum 20 analyses per hour per account/IP).", 429);
       const form = await req.formData();
       const file = form.get("image");
       if (!(file instanceof File)) return fail("Choose a photo before starting AI analysis.");
