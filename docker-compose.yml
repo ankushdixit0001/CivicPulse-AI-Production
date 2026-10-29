@@ -1,0 +1,63 @@
+version: '3.9'
+
+services:
+  mongo_db:
+    image: mongo:7
+    container_name: civicpulse-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: civicpulse
+    volumes:
+      - mongo_data:/data/db
+
+  ai_vision_service:
+    build:
+      context: ./ai-vision-service
+      dockerfile: Dockerfile
+    container_name: civicpulse-ai
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      - mongo_db
+
+  backend_service:
+    build:
+      context: ./backend-service
+      dockerfile: Dockerfile
+    container_name: civicpulse-backend
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      MONGODB_URI: mongodb://mongo_db:27017/civicpulse
+      AI_SERVICE_URL: http://ai_vision_service:5000
+      CORS_ORIGIN: http://localhost:3000
+    depends_on:
+      - mongo_db
+      - ai_vision_service
+
+  frontend_app:
+    build:
+      context: ./frontend-app
+      dockerfile: Dockerfile
+    container_name: civicpulse-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "3000:3000"
+    environment:
+      VITE_API_BASE_URL: http://localhost:4000
+      VITE_SOCKET_URL: http://localhost:4000
+    depends_on:
+      - backend_service
+
+volumes:
+  mongo_data:

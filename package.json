@@ -1,0 +1,15 @@
+{
+  "name": "civicpulse-ai",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "backend-service",
+    "frontend-app"
+  ],
+  "scripts": {
+    "dev:backend": "npm --prefix backend-service run dev",
+    "dev:frontend": "npm --prefix frontend-app run dev",
+    "dev:ai": "cd ai-vision-service && uvicorn app.main:app --reload --host 0.0.0.0 --port 5000",
+    "build:frontend": "npm --prefix frontend-app run build"
+  }
+}
