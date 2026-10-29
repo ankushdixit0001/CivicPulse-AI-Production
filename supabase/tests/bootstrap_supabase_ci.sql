@@ -4,12 +4,12 @@ do $$ begin create role anon nologin; exception when duplicate_object then null;
 do $$ begin create role authenticated nologin; exception when duplicate_object then null; end $$;
 do $$ begin create role service_role nologin bypassrls; exception when duplicate_object then null; end $$;
 
--- The PostGIS CI image pre-installs PostGIS in public. The production schema
--- uses PostGIS in extensions; this database is disposable, so recreate the
--- extension in that location rather than trying to relocate PostGIS 2.3+.
+-- The PostGIS CI image pre-installs PostGIS in public. PostGIS 2.3+ is not
+-- relocatable, so for this disposable database recreate it in the schema used
+-- by the live Supabase project rather than attempting ALTER EXTENSION SET SCHEMA.
 create schema if not exists extensions;
 drop extension if exists postgis cascade;
-create extension if not exists postgis with schema extensions;
+create extension postgis with schema extensions;
 
 create schema if not exists auth;
 create table if not exists auth.users (
