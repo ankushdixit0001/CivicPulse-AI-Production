@@ -60,13 +60,11 @@ jobs:
       - name: Verify frontend lockfile and install dependencies
         run: |
           test -f frontend-app/package-lock.json
-          cd frontend-app
-          npm ci
+          npm ci --prefix frontend-app --package-lock=true --no-audit --no-fund
 
       - name: Build frontend
         run: |
-          cd frontend-app
-          npm run build
+          npm run build --prefix frontend-app
 
   edge-function:
     name: Supabase Edge Function type check
