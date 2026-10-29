@@ -21,7 +21,7 @@ A successful text chat probe does not prove image analysis or before/after compa
 | Task | Candidate | Credential | Why | Caveats |
 |---|---|---|---|---|
 | Image classification and repair compare | Google Gemini API, configurable Flash-family model | Server-side Google AI Studio key | Official docs currently describe free access to selected models and multimodal use | Requires account/key; model availability, quotas and data terms vary |
-| Image classification and repair compare | Groq vision API, supported Qwen 3.6 family | Server-side Groq API key | Official docs list Qwen 3.6 27B with image + text input and JSON mode: https://console.groq.com/docs/vision | Requires key; verify current availability, quotas and terms |
+| Image classification and repair compare | Groq vision API, supported Qwen 3.8 family | Server-side Groq API key | Official docs list Qwen 3.6 27B with image + text input and JSON mode: https://console.groq.com/docs/vision | Requires key; verify current availability, quotas and terms |
 | Image classification and repair compare | OpenAI vision API, model configured by environment | Server-side OpenAI API key | Official model docs list image input for supported models | Requires API credentials and billing; a ChatGPT subscription does not itself configure API access |
 | Text help assistant | llmfaucet anonymous gateway | None | No-key starting path, OpenAI-compatible format | Shared capacity; not proof of vision or production SLA |
 | Local image quality | OpenCV + Pillow | None | Deterministic image decoding, blur/brightness/contrast/resolution | Cannot identify civic defects by itself |
