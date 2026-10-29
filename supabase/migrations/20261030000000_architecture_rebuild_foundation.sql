@@ -236,7 +236,7 @@ declare
   upload_size_bytes bigint := nullif(trim(coalesce(p_ai_metadata ->> 'upload_size_bytes', '')), '')::bigint;
   upload_visibility text := coalesce(nullif(trim(coalesce(p_ai_metadata ->> 'upload_visibility', '')), ''), 'public');
 begin
-  if p_defect_type not in ('pothole','garbage','sewage','streetlight','unknown') then
+  if p_defect_type is null or p_defect_type not in ('pothole','garbage','sewage','streetlight','unknown') then
     raise exception 'Unsupported issue category';
   end if;
   if char_length(trim(coalesce(p_description,''))) not between 5 and 2000 then
@@ -248,8 +248,8 @@ begin
   if upload_visibility not in ('private', 'public') then
     upload_visibility := 'private';
   end if;
-  v_idempotency_subject := coalesce(idempotency_subject, p_reporter_id::text, 'anonymous');
-  v_idempotency_key := coalesce(idempotency_key, gen_random_uuid()::text);
+  v_idempotency_subject := coalesce(v_idempotency_subject, p_reporter_id::text, 'anonymous');
+  v_idempotency_key := coalesce(v_idempotency_key, gen_random_uuid()::text);
   if char_length(v_idempotency_subject) not between 1 and 160
      or char_length(v_idempotency_key) not between 8 and 160 then
     raise exception 'Invalid idempotency scope or key';
