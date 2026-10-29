@@ -108,6 +108,24 @@ class VisionNormalizationTests(unittest.TestCase):
         self.assertEqual(result["priority_score"], 90.0)
         self.assertEqual(result["severity"], "CRITICAL")
 
+    def test_resolution_requires_substantial_damage_reduction(self):
+        before = {**self.quality, "quality": "good"}
+        after = {**self.quality, "quality": "good"}
+        model_result = {"is_resolved": True}
+        self.assertTrue(main._resolution_passes(model_result, 0.95, 92, 40, 5, before, after))
+        self.assertFalse(main._resolution_passes(model_result, 0.95, 92, 40, 35, before, after))
+
+    def test_resolution_rejects_poor_quality_evidence(self):
+        before = {**self.quality, "quality": "poor"}
+        after = {**self.quality, "quality": "good"}
+        self.assertFalse(main._resolution_passes({"is_resolved": True}, 0.99, 99, 50, 2, before, after))
+
+    def test_resolution_rejects_nonfinite_confidence(self):
+        before = {**self.quality, "quality": "good"}
+        after = {**self.quality, "quality": "good"}
+        confidence = main._bounded_number(float("nan"), 0.0, 1.0)
+        self.assertFalse(main._resolution_passes({"is_resolved": True}, confidence, 99, 50, 2, before, after))
+
     def test_invalid_image_bytes_are_rejected(self):
         with self.assertRaises(HTTPException) as raised:
             main._load_image(b"not an image")
