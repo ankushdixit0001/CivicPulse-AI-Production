@@ -150,7 +150,7 @@ def capability_health() -> Dict[str, Dict[str, Any]]:
         if not candidates:
             status = "unavailable"
             reason = "No provider is configured for this capability."
-        elif recent_success:
+        elif last.get("status") == "available" and recent_success:
             status = "available"
             reason = ""
         elif last.get("status") == "unavailable":
@@ -212,15 +212,25 @@ async def complete_json(
 
     failures: List[str] = []
     try:
-        timeout_seconds = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "42"))
+        per_provider_timeout = float(os.getenv("AI_PROVIDER_TIMEOUT_SECONDS", "14"))
     except ValueError:
-        timeout_seconds = 42.0
-    timeout_seconds = max(5.0, min(timeout_seconds, 60.0))
+        per_provider_timeout = 14.0
+    per_provider_timeout = max(5.0, min(per_provider_timeout, 18.0))
+    try:
+        total_timeout = float(os.getenv("AI_PROVIDER_TOTAL_TIMEOUT_SECONDS", "40"))
+    except ValueError:
+        total_timeout = 40.0
+    deadline = time.monotonic() + max(8.0, min(total_timeout, 40.0))
 
     for provider in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining < 2.0:
+            failures.append("fallback_budget_exhausted")
+            break
+        timeout_seconds = min(per_provider_timeout, remaining)
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
+                timeout=httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds))
             ) as client:
                 response = await client.post(
                     provider.endpoint,
