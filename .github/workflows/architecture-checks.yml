@@ -27,6 +27,16 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app tests scripts
 
+  edge-function-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check CivicPulse Edge Function
+        run: deno check supabase/functions/civicpulse-api/index.ts
+
   frontend-build:
     runs-on: ubuntu-latest
     steps:
