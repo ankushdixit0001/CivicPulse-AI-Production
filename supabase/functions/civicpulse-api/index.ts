@@ -486,6 +486,10 @@ Deno.serve(async (req: Request) => {
       const body = await req.json().catch(() => ({}));
       const message = String(body.message || "").trim().slice(0, 2000);
       if (!message) return fail("Enter a message.");
+      const chatUser = await currentUser(req);
+      if (!(await consumeAiAnalysisLimit(req, chatUser?.id || null))) {
+        return fail("AI usage limit reached. Try again later (maximum 20 AI requests per hour per account/IP).", 429);
+      }
 
       // Use live ticket context for both the hosted model and the no-key fallback.
       let recentIssues: any[] = [];
