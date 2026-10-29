@@ -315,12 +315,15 @@ function ReportPage() {
   const [preview, setPreview] = useState('');
   const [status, setStatus] = useState('Ready');
   const [submitting, setSubmitting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
   const [locationQuery, setLocationQuery] = useState('');
   const [locationResults, setLocationResults] = useState([]);
   const [searchingLocation, setSearchingLocation] = useState(false);
 
   const applyCameraOrFile = (file) => {
     if (!file) return;
+    setAnalysisResult(null);
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
       setStatus('Please choose a JPG, PNG, or WebP image.');
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -340,6 +343,41 @@ function ReportPage() {
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
     applyCameraOrFile(file);
+  };
+
+  const runAiAnalysis = async () => {
+    const file = fileInputRef.current?.files?.[0];
+    if (!file) {
+      setStatus('Capture or upload a JPG, PNG, or WebP photo before running AI analysis.');
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setStatus('Image must be 8 MB or smaller.');
+      return;
+    }
+    setAnalyzing(true);
+    setAnalysisResult(null);
+    setStatus('Analyzing the selected photo… this can take up to 45 seconds.');
+    try {
+      const payload = new FormData();
+      payload.append('image', file);
+      payload.append('defect_type', form.defect_type);
+      const response = await fetch(`${apiBase}/api/ai/analyze`, { method: 'POST', body: payload });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || 'AI analysis request failed.');
+      const analysis = result.analysis || result;
+      setAnalysisResult({ ...analysis, available: result.available === true, message: result.message || '' });
+      if (result.available === true) {
+        setStatus('AI analysis complete. Review the estimate below; the report is not saved until you submit it.');
+      } else {
+        setStatus(result.message || 'AI analysis is unavailable. You can still submit the report for staff review.');
+      }
+    } catch (error) {
+      setAnalysisResult({ status: 'unavailable', available: false, message: error.message || 'AI analysis request failed.' });
+      setStatus(error.message || 'AI analysis failed. Check the connection and try again.');
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const searchLocation = async (event) => {
@@ -549,10 +587,35 @@ function ReportPage() {
               onChange={handleFileChange}
             />
 
-            <button type="button" className="analysis-btn" onClick={() => setStatus(preview ? "AI analysis runs when you submit the report." : "Capture or upload an image before AI analysis.")}>
+            <button type="button" className="analysis-btn" onClick={runAiAnalysis} disabled={analyzing || submitting || !preview}>
               <Sparkles size={18} />
-              AI analysis on submit
+              {analyzing ? 'Analyzing photo…' : 'Analyze photo with AI'}
             </button>
+            {analysisResult && (
+              <div className="ai-preview-panel" role="status" aria-live="polite">
+                <div className="ai-preview-heading">
+                  <strong>{analysisResult.available ? 'AI analysis result' : 'AI analysis unavailable'}</strong>
+                  <span className={analysisResult.available ? 'ai-state-good' : 'ai-state-warning'}>
+                    {analysisResult.available ? 'Completed' : 'Manual review'}
+                  </span>
+                </div>
+                <p>{analysisResult.summary || analysisResult.message || 'No analysis summary was returned.'}</p>
+                {analysisResult.available && (
+                  <>
+                    <div className="ai-preview-metrics">
+                      <span>Confidence <strong>{Math.round((Number(analysisResult.confidence) || 0) * 100)}%</strong></span>
+                      <span>Severity <strong>{analysisResult.severity || 'LOW'}</strong></span>
+                      <span>Priority <strong>{Math.round(Number(analysisResult.priority_score) || 0)}/100</strong></span>
+                    </div>
+                    {analysisResult.recommended_action && <p><strong>Suggested action:</strong> {analysisResult.recommended_action}</p>}
+                    {analysisResult.image_quality?.quality_flags?.length > 0 && <p><strong>Photo warnings:</strong> {analysisResult.image_quality.quality_flags.join(', ')}</p>}
+                    {analysisResult.human_review_required && <p className="ai-review-note">Human review is required; AI results are estimates.</p>}
+                  </>
+                )}
+                {!analysisResult.available && <p className="ai-review-note">{analysisResult.message || 'The report can still be submitted. AI classification will be marked unavailable until the vision service is configured.'}</p>}
+                <button type="button" className="outline-btn" onClick={runAiAnalysis} disabled={analyzing || submitting}>Run analysis again</button>
+              </div>
+            )}
           </section>
 
           <section className="report-panel map-panel">
@@ -611,7 +674,7 @@ function ReportPage() {
             <label className="field-label">
               <span>Issue type</span>
               <div className="selector-box">
-                <select value={form.defect_type} onChange={(e) => setForm({ ...form, defect_type: e.target.value })}>
+                <select value={form.defect_type} onChange={(e) => { setForm({ ...form, defect_type: e.target.value }); setAnalysisResult(null); }}>
                   <option value="pothole">Pothole</option>
                   <option value="garbage">Garbage</option>
                   <option value="streetlight">Streetlight damage</option>
@@ -1019,7 +1082,7 @@ function CommandCenterPage() {
           <section className="map-panel command-map-panel">
             <div className="map-panel-inner">
               <div className="command-map-heading">LIVE INCIDENT MAP</div>
-              <TicketMap tickets={visibleTickets} />
+              <TicketMap tickets={tickets} />
               <div className="map-legend">
                 <span className="legend-chip critical">CRITICAL</span>
                 <span className="legend-chip medium">MEDIUM</span>
