@@ -91,18 +91,26 @@ async function consumeReportLimit(req: Request, userId: string | null) {
   return data === true;
 }
 async function listIssues(url: URL) {
-  let query = supabase.from("civic_issues").select("*").order("created_at", { ascending: false }).limit(250);
   const status = url.searchParams.get("status");
   const zone = url.searchParams.get("zone");
   const priority = url.searchParams.get("priority_score");
   const defect = url.searchParams.get("defect_type");
-  if (status && allowedStatuses.has(status)) query = query.eq("status", status);
-  if (zone) query = query.eq("zone", zone.slice(0, 80));
-  if (defect && allowedDefects.has(defect)) query = query.eq("defect_type", defect);
-  if (priority !== null && Number.isFinite(Number(priority))) query = query.gte("priority_score", Math.min(100, Math.max(0, Number(priority))));
-  const { data, error } = await query;
-  if (error) throw new Error(error.message);
-  return (data || []).map(normalizeIssue);
+  const rows: any[] = [];
+  const pageSize = 500;
+  // Page through the table so the live map is not silently capped at the first 250 tickets.
+  for (let offset = 0; offset < 100000; offset += pageSize) {
+    let query = supabase.from("civic_issues").select("*").order("created_at", { ascending: false }).range(offset, offset + pageSize - 1);
+    if (status && allowedStatuses.has(status)) query = query.eq("status", status);
+    if (zone) query = query.eq("zone", zone.slice(0, 80));
+    if (defect && allowedDefects.has(defect)) query = query.eq("defect_type", defect);
+    if (priority !== null && Number.isFinite(Number(priority))) query = query.gte("priority_score", Math.min(100, Math.max(0, Number(priority))));
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows.map(normalizeIssue);
 }
 async function addEvent(issueId: string, actorId: string | null, eventType: string, oldStatus: string | null, newStatus: string | null, note: string | null, metadata: unknown = {}) {
   const { error } = await supabase.from("issue_events").insert({
@@ -142,6 +150,24 @@ Deno.serve(async (req: Request) => {
       } catch (error) {
         return json({ configured: true, available: false, reason: String(error).slice(0, 180) });
       }
+    }
+
+    if (req.method === "POST" && (path.endsWith("/api/ai/analyze") || path.endsWith("/ai/analyze"))) {
+      const form = await req.formData();
+      const file = form.get("image");
+      if (!(file instanceof File)) return fail("Choose a photo before starting AI analysis.");
+      const defect = String(form.get("defect_type") || "unknown").trim().toLowerCase();
+      if (!allowedDefects.has(defect)) return fail("Choose a supported issue category.");
+      if (file.size < 1 || file.size > 8 * 1024 * 1024) return fail("Image must be between 1 byte and 8 MB.");
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase())) return fail("Upload a JPG, PNG, or WebP photo.");
+      const analysis = await analyze(file, defect);
+      const available = analysis.status === "success" && analysis.model_source === "openai_vision";
+      return json({
+        available,
+        analysis,
+        message: available ? "AI photo analysis completed. Review the estimate before submitting." :
+          (analysis.metadata?.reason || analysis.reason || "AI analysis is unavailable. The report can still be submitted for manual review."),
+      });
     }
 
     if (req.method === "GET" && (path.endsWith("/api/me") || path.endsWith("/me"))) {
