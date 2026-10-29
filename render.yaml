@@ -5,12 +5,24 @@ services:
     plan: free
     dockerContext: ./ai-vision-service
     dockerfilePath: ./ai-vision-service/Dockerfile
-    healthCheckPath: /health
+    healthCheckPath: /health/live
     autoDeploy: true
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_VISION_MODEL
-        value: gpt-4.1-mini
       - key: VISION_API_TOKEN
         sync: false
+      - key: AI_PROVIDER_PRIORITY
+        value: gemini,openrouter,openai
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: OPENROUTER_VISION_MODEL
+        value: nvidia/nemotron-3.5-super-vl:free
+      - key: OPENROUTER_CHAT_MODEL
+        value: nvidia/nemotron-3.5-super-vl:free
+      - key: ALLOW_EXTERNAL_IMAGE_AI
+        value: "false"
+      - key: ALLOW_EXTERNAL_TEXT_AI
+        value: "false"
+      - key: ALLOW_OPENROUTER_IMAGE_FALLBACK
+        value: "false"
+      - key: ALLOW_OPENROUTER_TEXT_FALLBACK
+        value: "false"
