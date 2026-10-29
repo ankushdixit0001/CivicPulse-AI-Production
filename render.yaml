@@ -7,3 +7,10 @@ services:
     dockerfilePath: ./ai-vision-service/Dockerfile
     healthCheckPath: /health
     autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_VISION_MODEL
+        value: gpt-4.1-mini
+      - key: VISION_API_TOKEN
+        sync: false
