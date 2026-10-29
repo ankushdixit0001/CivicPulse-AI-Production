@@ -71,7 +71,7 @@ def configured_providers() -> List[ProviderConfig]:
             "groq",
             os.getenv("GROQ_CHAT_COMPLETIONS_URL", "https://api.groq.com/openai/v1/chat/completions").rstrip("/"),
             groq_key,
-            os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b").strip(),
+            os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b").strip(),
         ))
 
     # Shared anonymous capacity is for prototype/demo use, never assumed healthy.
