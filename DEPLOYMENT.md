@@ -59,23 +59,60 @@ Use `staff` instead of `admin` for staff access. Replace the placeholder email b
 
 The `civic-issue-images` bucket is public because report and repair evidence is intended to be visible with public civic tickets. Do not upload identity documents, private images, or unrelated personal data to this bucket.
 
-## AI vision service (remaining external deployment)
+## AI vision service and provider configuration
 
-The FastAPI/YOLO service is a Docker workload and should run separately from the static Vercel frontend. A Render Blueprint is included at `render.yaml`; import this repository into Render and deploy the `civicpulse-ai-vision` service. Check `/health` after deployment.
+The original FastAPI service in `ai-vision-service` is the only approved place for model-vendor calls. Supabase Edge Function routes to it using a private service-to-service token. Do not call model vendors directly from the browser or from the Edge Function.
 
-During the Render Blueprint setup, supply:
-- `OPENAI_API_KEY`: an OpenAI API key with API billing enabled. ChatGPT subscriptions do not automatically include API credits.
-- `VISION_API_TOKEN`: a long random secret. Use the same value for the Supabase Edge Function secret; do not commit it.
+### Deploy the service
 
-After the service deploys, check `https://YOUR-AI-SERVICE.onrender.com/health`. Then set both secrets in Supabase:
+1. Import this repository into Render and deploy the `civicpulse-ai-vision` Blueprint.
+2. The Blueprint requires `VISION_API_TOKEN`. Generate a long random secret and configure it in Render. Use the exact same value for Supabase's `AI_SERVICE_TOKEN`; do not commit it.
+3. Check `/health/live` for process liveness. `/health` reports provider configuration and recent successful task calls; a process being alive is not proof that inference works.
+4. Set Supabase Edge Function secrets to the real HTTPS service base URL and matching private token:
 
 ```bash
 supabase secrets set AI_SERVICE_URL=https://YOUR-AI-SERVICE.onrender.com AI_SERVICE_TOKEN=YOUR_SAME_RANDOM_VISION_TOKEN --project-ref ccrhdrjywnaccthzyjte
 ```
 
-Replace both placeholders with the real Render URL and the exact same token entered in Render. Do not include `/analyze` at the end. Once configured, the API calls `/analyze` for new reports and `/verify-resolution` for after-repair evidence. Until then, reports are still saved, but the API explicitly marks AI analysis as unavailable. A positive AI repair assessment requires explicit staff confirmation before the ticket is closed.
+Replace placeholders with the actual URL and secret. Do not include `/analyze` at the end of `AI_SERVICE_URL`. Do not paste the token into Vercel `VITE_*` variables.
 
-The current YOLO model is a general object detector, not a validated civic-damage classifier. Treat scores as assistive estimates, not ground truth.
+**Render free services are for demos/testing, not production uptime guarantees.** They may cold-start or be resource constrained. A dependable public launch needs an appropriate hosting plan and a monitoring/rollback plan.
+
+### Choose an AI provider
+
+The service works without an external model key, but in that mode its image-analysis result is deliberately partial: local image-quality checks may run, but the app must not claim a civic defect was detected. Repair verification is unavailable and staff must manually inspect evidence.
+
+For a free-tier prototype, the first option is a Google Gemini API key:
+- Create a key in [Google AI Studio](https://aistudio.google.com/app/apikey).
+- Set `GEMINI_API_KEY` in the **Render service's secret environment**.
+- `GEMINI_MODEL` defaults in the Blueprint to `gemini-3.8-flash`; check the current [model list](https://ai.google.dev/gemini-api/docs/models) and [pricing/data-use policy](https://ai.google.dev/gemini-api/docs/pricing) before use.
+
+An optional multimodal fallback is OpenRouter:
+- Create `OPENROUTER_API_KEY` and store it only in Render.
+- The starting vision model is `nvidia/nemotron-3.5-super-vl:free`; see its [current capabilities, limits and data warning](https://openrouter.ai/nvidia/nemotron-3.5-super-vl:free).
+- Free hosted inference is rate-limited and has no guaranteed SLA. The model page warns against sending confidential/personal information. Keep OpenRouter image fallback disabled unless the app's privacy policy and consent explicitly allow it.
+
+The existing OpenAI-compatible adapter remains optional (`OPENAI_API_KEY` and `OPENAI_VISION_MODEL`). No provider key is included in the frontend.
+
+### Privacy switches
+
+The Blueprint intentionally defaults to:
+- `ALLOW_EXTERNAL_IMAGE_AI=false`
+- `ALLOW_EXTERNAL_TEXT_AI=false`
+- `ALLOW_OPENROUTER_IMAGE_FALLBACK=false`
+- `ALLOW_OPENROUTER_TEXT_FALLBACK=false`
+
+External AI is disabled until you have reviewed the selected provider's data handling and the application's user notice. Once policy permits the relevant processing, set the appropriate flags in the Render dashboard. Gemini free-tier data-use terms may differ from paid-tier terms. Never route personal/confidential photos through a free shared inference route by default.
+
+### AI health and behavior
+
+- `GET /health/live` is only a process-liveness check.
+- `GET /health` reports configured capabilities separately from a recent successful request.
+- `GET /health/providers` requires `x-civicpulse-ai-token` and returns sanitized provider configuration/state.
+- AI provider keys missing, rate-limited, timing out or returning invalid JSON must cause a clear partial/unavailable result; they must not block report persistence.
+- Before calling a release complete, test a non-personal sample image, text chat, synthetic before/after repair pair, and missing-key/401/429/timeout/provider-failure paths. A successful frontend build is not an AI integration test.
+
+See [HLD](./docs/architecture/HLD.md), [LLD](./docs/architecture/LLD.md), [database design](./docs/architecture/DATABASE_DESIGN.md), [AI provider matrix](./docs/architecture/AI_PROVIDER_MATRIX.md), and [feature/release plan](./docs/architecture/FEATURE_CATALOGUE_AND_PLAN.md) for the full design.
 
 ## Legacy Node API
 
