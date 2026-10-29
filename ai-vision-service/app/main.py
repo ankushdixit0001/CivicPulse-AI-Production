@@ -21,6 +21,7 @@ except ImportError:  # Allows quality checks and unit tests without optional YOL
 APP_TITLE = "CivicPulse AI Vision Service"
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_SIDE = 6000
+MAX_INFERENCE_SIDE = 1280
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip()
 VISION_API_TOKEN = os.getenv("VISION_API_TOKEN", "").strip()
@@ -30,7 +31,7 @@ app = FastAPI(title=APP_TITLE, version="2.0.0")
 
 # COCO YOLO is used only for generic object context. It is NOT a civic-defect model.
 try:
-    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")) if YOLO is not None else None
+    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")) if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true" else None
 except Exception:
     model = None
 
@@ -49,11 +50,15 @@ def _load_image(data: bytes) -> Tuple[Image.Image, np.ndarray]:
         image = Image.open(io.BytesIO(data))
         image.verify()
         image = Image.open(io.BytesIO(data))
-        image = ImageOps.exif_transpose(image).convert("RGB")
+        image = ImageOps.exif_transpose(image)
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.") from exc
     if image.width > MAX_IMAGE_SIDE or image.height > MAX_IMAGE_SIDE:
         raise HTTPException(status_code=400, detail="Image dimensions must be 6000 x 6000 pixels or smaller.")
+    # Bound decoded image memory before creating NumPy/OpenCV copies.
+    # This protects API clients that bypass browser-side image compression.
+    image.thumbnail((MAX_INFERENCE_SIDE, MAX_INFERENCE_SIDE), Image.Resampling.LANCZOS)
+    image = image.convert("RGB")
     array = np.asarray(image)
     return image, cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
