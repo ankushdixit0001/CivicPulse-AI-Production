@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -193,6 +194,70 @@ def _extract_json(content: Any) -> Dict[str, Any]:
     return parsed
 
 
+def _number_in_range(value: Any, lower: float, upper: float) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and lower <= float(value) <= upper
+
+
+def _validate_contract(result: Dict[str, Any], capability: str) -> None:
+    """Reject a parseable but incomplete JSON object before marking a provider healthy."""
+    if capability == "chat":
+        reply = result.get("reply", result.get("answer"))
+        if not isinstance(reply, str) or not reply.strip():
+            raise ValueError("Chat result is missing a non-empty reply.")
+        return
+
+    if capability == "vision_analysis":
+        required = {
+            "defect_type", "confidence", "damage_coverage_pct", "safety_risk",
+            "summary", "visible_evidence", "recommended_action",
+            "human_review_required", "bounding_boxes",
+        }
+        if not required.issubset(result):
+            raise ValueError("Vision result is missing required fields.")
+        if not isinstance(result["defect_type"], str) or not result["defect_type"].strip():
+            raise ValueError("Vision defect_type must be a non-empty string.")
+        if not _number_in_range(result["confidence"], 0.0, 1.0):
+            raise ValueError("Vision confidence is outside the supported range.")
+        if not _number_in_range(result["damage_coverage_pct"], 0.0, 100.0):
+            raise ValueError("Vision damage coverage is outside the supported range.")
+        if not isinstance(result["safety_risk"], bool) or not isinstance(result["human_review_required"], bool):
+            raise ValueError("Vision boolean fields have invalid types.")
+        if not isinstance(result["summary"], str) or not isinstance(result["recommended_action"], str):
+            raise ValueError("Vision summary/action fields have invalid types.")
+        if not isinstance(result["visible_evidence"], list) or not all(isinstance(item, str) for item in result["visible_evidence"]):
+            raise ValueError("Vision visible_evidence must be an array of strings.")
+        if not isinstance(result["bounding_boxes"], list):
+            raise ValueError("Vision bounding_boxes must be an array.")
+        return
+
+    if capability == "repair_verification":
+        required = {
+            "is_resolved", "confidence", "resolution_score", "before_damage_pct",
+            "after_damage_pct", "visible_change", "evidence", "human_review_required",
+        }
+        if not required.issubset(result):
+            raise ValueError("Repair result is missing required fields.")
+        if not isinstance(result["is_resolved"], bool) or not isinstance(result["human_review_required"], bool):
+            raise ValueError("Repair boolean fields have invalid types.")
+        for field_name, lower, upper in (
+            ("confidence", 0.0, 1.0),
+            ("resolution_score", 0.0, 100.0),
+            ("before_damage_pct", 0.0, 100.0),
+            ("after_damage_pct", 0.0, 100.0),
+        ):
+            if not _number_in_range(result[field_name], lower, upper):
+                raise ValueError("Repair numeric field is outside the supported range.")
+        if not isinstance(result["visible_change"], str):
+            raise ValueError("Repair visible_change must be a string.")
+        if not isinstance(result["evidence"], list) or not all(isinstance(item, str) for item in result["evidence"]):
+            raise ValueError("Repair evidence must be an array of strings.")
+        return
+
+    raise ValueError("Unsupported AI capability.")
+
+
 async def complete_json(
     messages: List[Dict[str, Any]],
     max_tokens: int,
@@ -264,6 +329,7 @@ async def complete_json(
             choices = payload.get("choices") if isinstance(payload, dict) else None
             message = choices[0].get("message", {}) if isinstance(choices, list) and choices else {}
             parsed = _extract_json(message.get("content"))
+            _validate_contract(parsed, capability)
             _record(capability, "available", provider.provider_id, provider.model)
             logger.info(
                 "AI provider succeeded capability=%s provider=%s model=%s",
