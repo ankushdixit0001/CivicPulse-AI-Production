@@ -14,10 +14,7 @@ import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 try:
-    try:
     from ultralytics import YOLO
-except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
-    YOLO = None
 except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
     YOLO = None
 
@@ -275,6 +272,27 @@ def _normalise_boxes(boxes: Any) -> List[Dict[str, Any]]:
     return clean
 
 
+def _resolution_passes(
+    result: Dict[str, Any],
+    confidence: float,
+    score: float,
+    before_damage: float,
+    after_damage: float,
+    before_quality: Dict[str, Any],
+    after_quality: Dict[str, Any],
+) -> bool:
+    """Require strong model agreement plus a substantial, measurable damage reduction."""
+    return bool(
+        result.get("is_resolved") is True
+        and confidence >= 0.85
+        and score >= 85
+        and before_quality.get("quality") != "poor"
+        and after_quality.get("quality") != "poor"
+        and before_damage >= 10
+        and after_damage <= max(5.0, before_damage * 0.2)
+    )
+
+
 @app.get("/health")
 def healthcheck() -> Dict[str, Any]:
     return {
@@ -389,9 +407,8 @@ async def verify_resolution(
     score = _bounded_number(result.get("resolution_score", 0), 0.0, 100.0)
     before_damage = _bounded_number(result.get("before_damage_pct", 0), 0.0, 100.0)
     after_damage = _bounded_number(result.get("after_damage_pct", 0), 0.0, 100.0)
-    # A model verdict is evidence for staff, not sole legal/operational authority.
-    verified = bool(result.get("is_resolved") is True and confidence >= 0.85 and score >= 85
-                     and before_quality["quality"] != "poor" and after_quality["quality"] != "poor")
+    # Require measurable damage reduction; staff can still manually review inconclusive evidence.
+    verified = _resolution_passes(result, confidence, score, before_damage, after_damage, before_quality, after_quality)
     return {
         "status": "success",
         "is_resolved": verified,
