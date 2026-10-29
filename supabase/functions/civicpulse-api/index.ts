@@ -318,9 +318,10 @@ Deno.serve(async (req: Request) => {
         const capabilities = health?.capabilities || {};
         const analysisConfigured = health?.defect_reasoning_configured === true && health?.inference_auth_configured === true;
         const repairConfigured = health?.repair_verification_configured === true && health?.inference_auth_configured === true;
-        const analysisAvailable = capabilities?.vision_analysis?.available === true;
-        const repairAvailable = capabilities?.repair_verification?.available === true;
-        const chatAvailable = capabilities?.chat?.available === true;
+        const internalTokenReady = Boolean(Deno.env.get("AI_SERVICE_TOKEN")) && health?.inference_auth_configured === true;
+        const analysisAvailable = internalTokenReady && capabilities?.vision_analysis?.available === true;
+        const repairAvailable = internalTokenReady && capabilities?.repair_verification?.available === true;
+        const chatAvailable = internalTokenReady && capabilities?.chat?.available === true;
         return json({
           ...health,
           configured: true,
