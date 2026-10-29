@@ -130,15 +130,15 @@ Do not disclose raw upstream response body, API keys, stack trace or internal UR
 
 ### Report intake
 
-1. Validate request and idempotency key.
-2. Consume report limit.
-3. Decode image and verify signature.
-4. Store image; if later DB operation fails, clean up orphan object where possible.
-5. Call AI with independent timeout.
-6. Use an indexed PostGIS duplicate query and atomic merge/create.
-7. Write event and return canonical status.
+1. Validate the request, consume report limits, and verify image signature and size.
+2. Store the image; clean up the object if the database write fails.
+3. Run the create-or-merge RPC using the resident-selected category and safe baseline scores with `analysis_status=pending`.
+4. If merged, delete the unused uploaded image and return `ai_status=skipped_merged`; do not infer for an image that is not attached to the canonical issue.
+5. If created, schedule `runBackgroundIssueAnalysis` with `EdgeRuntime.waitUntil` and return `ai_status=pending` promptly.
+6. The background task calls the AI orchestrator, validates canonical fields again, updates triage fields only on a valid successful result, and appends an audit event.
+7. If inference or persistence fails, mark triage unavailable where possible and retain the issue for manual review.
 
-AI unavailable returns quality-only/unknown metadata; it must not fabricate a confirmed defect from the user-selected category.
+AI unavailable returns explicit pending/partial/unavailable metadata; it must not fabricate a confirmed defect from the user-selected category. Supabase background tasks remain subject to hosted Edge Runtime limits, so a durable queue/outbox is the next step if workloads require stronger delivery guarantees.
 
 ### Duplicate merge
 
