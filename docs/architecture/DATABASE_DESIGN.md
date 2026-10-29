@@ -228,3 +228,12 @@ Each migration should pass on a clean local database and a restored production-s
 - Configure a retention period for rejected/spam reports and uploaded evidence; deletion must respect legal/audit requirements and be documented.
 - Keep provider-generated responses only as needed for supportability; store a normalized result, not hidden chain-of-thought or entire raw conversation by default.
 - Back up schema and data before migrations; export migration output and row counts. Verify restore by test project rather than assuming backups are usable.
+
+
+## 11. Live-state caveats verified during the rebuild audit
+
+- The live Storage bucket `civic-issue-images` is currently **public** and allows JPG, PNG and WebP up to 8 MiB. Existing frontend code uses `getPublicUrl`; do not switch this bucket to private until the API returns signed URLs and frontend access tests pass. The target design separates public approved thumbnails from private original evidence.
+- The live DB has the migration versions `20261029151344` through `20261029161154`, but the corresponding SQL files were missing from the Git repository at the start of this rebuild. The branch now contains reconstructed baseline SQL to make the schema source-controlled. See [migration source notes](../../supabase/migrations/README.md). These are catalog-based reconstructions—not verified byte-for-byte originals—and must be tested with a clean local reset before fresh-project bootstrap.
+- The additive foundation migration is **not applied to production** and no database reset was performed. New `issue_reports`, `issue_media`, `ai_analysis_runs`, assignment history, subscriptions and outbox tables are schema foundations until Edge Function workflows begin writing/reading them.
+- The current `submit_civic_issue` RPC merges reports within a 15 m radius but historically increments `upvote_count` for duplicates and does not preserve each duplicate's independent photo/report row. The target design separates reports, votes and media; migrate this behavior with the new tables and E2E tests, rather than changing it blindly on the live project.
+- The current security advisor reports that leaked-password protection is disabled. This is an Auth dashboard setting, not a SQL migration; enable it after reviewing the user-signup flow.
