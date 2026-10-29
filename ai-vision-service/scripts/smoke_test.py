@@ -14,7 +14,6 @@ import argparse
 import json
 import mimetypes
 import os
-import sys
 import urllib.error
 import urllib.request
 import uuid
@@ -130,7 +129,8 @@ def main() -> int:
     if not args.token:
         print("\nNo service token supplied; protected AI routes were not tested.")
         print("Set VISION_API_TOKEN privately and rerun this smoke test to validate actual provider calls.")
-        return 0 if passed else 2
+        # Exit non-zero so a health-only check cannot be mistaken for a full smoke test.
+        return 2
 
     headers_token = args.token
     try:
