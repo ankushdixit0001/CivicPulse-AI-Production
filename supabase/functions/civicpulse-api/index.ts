@@ -84,14 +84,28 @@ function recordAiCapability(capability: string, status: string, provider: string
 }
 function capabilityStatus(capability: string, configured: boolean) {
   const state = aiCapabilityState[capability];
+  const checkedAt = state.checked_at ? Date.parse(state.checked_at) : Number.NaN;
+  const recentSuccess = state.status === "available"
+    && Number.isFinite(checkedAt)
+    && Date.now() - checkedAt <= 15 * 60 * 1000;
+  const status = !configured
+    ? "unavailable"
+    : (recentSuccess ? "available" : (state.status === "unavailable" ? "unavailable" : "unknown"));
+  const reason = !configured
+    ? "No provider is configured."
+    : (recentSuccess
+      ? ""
+      : (state.status === "available"
+        ? "The last successful request is stale; this capability needs a fresh request."
+        : (state.reason || "Configured but not yet verified by a successful request.")));
   return {
     configured,
-    available: configured && state.status === "available",
-    status: configured ? state.status : "unavailable",
+    available: configured && recentSuccess,
+    status,
     provider: state.provider || null,
     model: state.model || null,
     last_checked_at: state.checked_at || null,
-    reason: configured ? (state.reason || (state.status === "unknown" ? "Configured but not yet verified by a successful request." : "")) : "No provider is configured.",
+    reason,
   };
 }
 function bytesToBase64(bytes: Uint8Array) {
