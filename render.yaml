@@ -8,9 +8,19 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      - key: VISION_API_TOKEN
+        sync: false
+      - key: LLMFAUCET_ENABLED
+        value: "true"
+      - key: LLMFAUCET_MODEL
+        value: auto:smart
+      - key: AI_PROVIDER_ORDER
+        value: "gemini,groq,llmfaucet,openai"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_VISION_MODEL
         value: gpt-4.1-mini
-      - key: VISION_API_TOKEN
-        sync: false
