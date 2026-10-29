@@ -22,6 +22,18 @@ import 'leaflet/dist/leaflet.css';
 const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : '')).replace(/\/+$/, '');
 const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
 
+function formatRelativeTime(value) {
+  if (!value) return 'time unavailable';
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 'time unavailable';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+  if (seconds < 604800) return Math.floor(seconds / 86400) + 'd ago';
+  return new Date(timestamp).toLocaleDateString();
+}
+
 const workflow = [
   { id: '01', title: 'Snap', description: 'Citizens photograph the issue and pin its location.', icon: Camera },
   { id: '02', title: 'Score', description: 'AI detects the defect, measures coverage and assigns a 1-100 priority.', icon: Wand2 },
@@ -302,6 +314,9 @@ function ReportPage() {
   const [preview, setPreview] = useState('');
   const [status, setStatus] = useState('Ready');
   const [submitting, setSubmitting] = useState(false);
+  const [locationQuery, setLocationQuery] = useState('');
+  const [locationResults, setLocationResults] = useState([]);
+  const [searchingLocation, setSearchingLocation] = useState(false);
 
   const applyCameraOrFile = (file) => {
     if (!file) return;
@@ -324,6 +339,46 @@ function ReportPage() {
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
     applyCameraOrFile(file);
+  };
+
+  const searchLocation = async (event) => {
+    event.preventDefault();
+    const query = locationQuery.trim();
+    if (query.length < 3) {
+      setStatus('Enter at least 3 characters to search for a place.');
+      return;
+    }
+    setSearchingLocation(true);
+    setLocationResults([]);
+    setStatus('Searching OpenStreetMap for this address...');
+    try {
+      const params = new URLSearchParams({ q: query, format: 'jsonv2', limit: '5', addressdetails: '1' });
+      const response = await fetch('https://nominatim.openstreetmap.org/search?' + params.toString(), { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error('Address search is temporarily unavailable. You can still tap the map to pin a location.');
+      const results = await response.json();
+      if (!Array.isArray(results) || results.length === 0) {
+        setStatus('No matching places found. Try a nearby landmark or tap the map.');
+        return;
+      }
+      setLocationResults(results.filter((item) => Number.isFinite(Number(item.lat)) && Number.isFinite(Number(item.lon))));
+      setStatus('Choose the matching place below, or tap directly on the map.');
+    } catch (error) {
+      setStatus(error.message || 'Could not search for this address.');
+    } finally {
+      setSearchingLocation(false);
+    }
+  };
+
+  const chooseSearchResult = (result) => {
+    const latitude = Number(result.lat);
+    const longitude = Number(result.lon);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      setStatus('That place returned invalid coordinates. Please choose another result.');
+      return;
+    }
+    setForm((current) => ({ ...current, latitude: latitude.toFixed(6), longitude: longitude.toFixed(6), landmark: String(result.display_name || '').slice(0, 200) }));
+    setLocationResults([]);
+    setStatus('Place selected. Verify the pin on the map before submitting.');
   };
 
   const useCurrentLocation = () => {
@@ -498,6 +553,26 @@ function ReportPage() {
               <h2>Pin the location &amp; dispatch details</h2>
             </div>
 
+            <form className="location-search" onSubmit={searchLocation}>
+              <label className="field-label" htmlFor="location-search-input">
+                <span>Search an address or landmark</span>
+                <div className="location-search-row">
+                  <input id="location-search-input" type="search" value={locationQuery} onChange={(event) => setLocationQuery(event.target.value)} placeholder="e.g. ABES Engineering College, Ghaziabad" maxLength={180} autoComplete="street-address" />
+                  <button type="submit" className="blue-btn" disabled={searchingLocation}>{searchingLocation ? 'Searching...' : 'Search'}</button>
+                </div>
+              </label>
+              {locationResults.length > 0 && (
+                <div className="location-results" role="listbox" aria-label="Address search results">
+                  {locationResults.map((result) => (
+                    <button type="button" role="option" aria-selected="false" className="location-result" key={result.place_id} onClick={() => chooseSearchResult(result)}>
+                      <MapPinned size={15} /><span>{result.display_name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="location-search-note">Search is powered by OpenStreetMap. You can also tap the map to place the pin precisely.</p>
+            </form>
+
             <div className="map-box">
               <LocationPickerMap latitude={form.latitude} longitude={form.longitude} onLocationChange={selectMapLocation} />
               <button type="button" className="location-chip" onClick={useCurrentLocation}>
@@ -550,12 +625,12 @@ function ReportPage() {
             </div>
 
             <div className="submit-row">
-              <button type="button" className="mini-action">
-                <Sparkles size={15} />
-                Edit
-              </button>
-              <button type="button" className="mini-action icon-only" aria-label="More options">
-                <ChevronDown size={15} />
+              <button type="button" className="mini-action" onClick={() => {
+                document.querySelector('.map-box')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                setStatus('Adjust the pin on the map or search for another address.');
+              }}>
+                <MapPinned size={15} />
+                Edit location
               </button>
               <button type="submit" className="submit-btn" disabled={submitting}>
                 <Send size={16} />
@@ -563,7 +638,7 @@ function ReportPage() {
               </button>
             </div>
 
-            {status && <p className="status-line">{status}</p>}
+            {status && <p className="status-line" role="status" aria-live="polite">{status}</p>}
 
             <div className="submit-spacer" aria-hidden="true" />
           </section>
@@ -574,7 +649,7 @@ function ReportPage() {
         type="button"
         className="floating-cta"
         aria-label="Submit report"
-        onClick={() => document.querySelector('.report-form')?.requestSubmit?.() || document.querySelector('.submit-btn')?.click()}
+        onClick={() => { const reportForm = document.querySelector('.report-form'); if (reportForm?.requestSubmit) reportForm.requestSubmit(); else document.querySelector('.submit-btn')?.click(); }}
       >
         <Send size={18} />
       </button>
@@ -613,8 +688,8 @@ function CommandCenterPage() {
     loadTickets();
     if (!apiBase) return undefined;
     const socket = io(apiBase, { transports: ['websocket', 'polling'] });
-    socket.on('INCIDENT_CREATED', (ticket) => setTickets((current) => [ticket, ...current.filter((item) => item._id !== ticket._id)]));
-    socket.on('INCIDENT_UPDATED', (ticket) => setTickets((current) => current.map((item) => item._id === ticket._id ? { ...item, ...ticket } : item)));
+    socket.on('INCIDENT_CREATED', (ticket) => setTickets((current) => [ticket, ...current.filter((item) => (item._id || item.id) !== (ticket._id || ticket.id))]));
+    socket.on('INCIDENT_UPDATED', (ticket) => setTickets((current) => current.map((item) => (item._id || item.id) === (ticket._id || ticket.id) ? { ...item, ...ticket } : item)));
     return () => socket.disconnect();
   }, []);
 
@@ -631,7 +706,7 @@ function CommandCenterPage() {
       Resolved: [],
     };
 
-    tickets.forEach((ticket) => {
+    visibleTickets.forEach((ticket) => {
       if (queue[ticket.status]) {
         queue[ticket.status].push(ticket);
       }
@@ -749,13 +824,13 @@ function CommandCenterPage() {
             </div>
 
             <div className="dispatch-list">
-              {tickets.slice(0, 6).map((ticket) => (
+              {visibleTickets.slice(0, 6).map((ticket) => (
                 <div key={ticket._id} className="dispatch-item">
                   <div className="dispatch-icon" aria-hidden="true">↳</div>
                   <div className="dispatch-text">
                     <div className="dispatch-row">
                       <span className="dispatch-title">{ticket.defect_type}</span>
-                      <span className="dispatch-age">{ticket.createdAt ? '1d ago' : 'now'}</span>
+                      <span className="dispatch-age">{formatRelativeTime(ticket.createdAt || ticket.created_at)}</span>
                     </div>
                     <div className="dispatch-meta">{ticket.zone || 'central'} Zone — Score {ticket.priority_score || 0} — {ticket.status}</div>
                   </div>
@@ -766,7 +841,7 @@ function CommandCenterPage() {
         </div>
 
         <div className="taskboard-title">
-          <span>DISPATCH BOARD — DRAG CARDS OR USE →</span>
+          <span>DISPATCH BOARD — USE STATUS ACTIONS</span>
         </div>
 
         <div className="kanban-grid">
@@ -787,7 +862,7 @@ function CommandCenterPage() {
                 {(dispatchQueue[status] || []).map((ticket) => (
                   <div key={ticket._id} className="kanban-card">
                     <div className="card-header-line">
-                      <span className="card-id">{ticket._id?.slice(-5) || 'N/A'}</span>
+                      <span className="card-id">{String(ticket._id || ticket.id || 'N/A').slice(-5)}</span>
                       <span className={`card-severity ${String(ticket.severity || 'MEDIUM').toLowerCase()}`}>
                         {ticket.severity || 'MEDIUM'}
                       </span>
@@ -798,8 +873,8 @@ function CommandCenterPage() {
                       <span>Priority {ticket.priority_score ?? 0}</span>
                       <span>Reports {ticket.report_frequency ?? 1}</span>
                     </div>
-                    {status === 'Pending' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id, 'Assigned')}>Assign ticket →</button>}
-                    {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id, 'In Progress')}>Start work →</button>}
+                    {status === 'Pending' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'Assigned')}>Assign ticket →</button>}
+                    {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'In Progress')}>Start work →</button>}
                     {status === 'In Progress' && <p className="card-evidence-note">Resolution requires after-repair evidence.</p>}
                   </div>
                 ))}

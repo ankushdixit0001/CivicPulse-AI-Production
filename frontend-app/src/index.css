@@ -1459,3 +1459,32 @@ button {
   .map-box { height: 320px; }
   .command-map-panel .map-panel-inner { min-height: 0; }
 }
+
+
+/* Address search and selectable OpenStreetMap geocoder results. */
+.location-search { margin: 0 0 12px; position: relative; }
+.location-search .field-label { display: block; }
+.location-search-row { display: flex; gap: 8px; align-items: stretch; }
+.location-search-row input {
+  flex: 1; min-width: 0; border: 1px solid rgba(148,163,184,.35); border-radius: 10px;
+  padding: 11px 12px; background: rgba(15,23,42,.42); color: inherit; font: inherit;
+}
+.location-search-row input:focus { outline: 2px solid rgba(59,130,246,.65); outline-offset: 1px; }
+.location-search-row .blue-btn { flex: 0 0 auto; min-width: 86px; }
+.location-search-note { margin: 7px 0 0; font-size: .72rem; line-height: 1.4; color: var(--muted, #94a3b8); }
+.location-results {
+  display: grid; gap: 4px; margin-top: 8px; padding: 6px; max-height: 220px; overflow-y: auto;
+  border: 1px solid rgba(148,163,184,.3); border-radius: 12px; background: #0f172a;
+}
+.location-result {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 10px;
+  border: 0; border-radius: 8px; background: transparent; color: #e2e8f0;
+  text-align: left; font: inherit; font-size: .8rem; line-height: 1.45; cursor: pointer;
+}
+.location-result span { min-width: 0; overflow-wrap: anywhere; }
+.location-result svg { flex: 0 0 auto; margin-top: 2px; color: #60a5fa; }
+.location-result:hover, .location-result:focus-visible { background: rgba(59,130,246,.16); outline: none; }
+@media (max-width: 480px) {
+  .location-search-row { flex-direction: column; }
+  .location-search-row .blue-btn { width: 100%; }
+}
