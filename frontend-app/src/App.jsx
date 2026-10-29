@@ -851,19 +851,30 @@ function CommandCenterPage() {
     } catch (error) { setAuthMessage(error.message || 'Resolution evidence upload failed.'); }
   };
 
-  const confirmResolution = async (ticketId) => {
+  const confirmResolution = async (ticketId, manualOverride = false) => {
     if (!authSession?.access_token || !['staff', 'admin'].includes(profileRole)) {
       setAuthMessage('Only signed-in staff/admin accounts can confirm a repair.');
       return;
     }
+    const confirmationText = manualOverride
+      ? 'AI verification did not pass. Confirm that you personally inspected the after-repair photo and the repair is complete?'
+      : 'Confirm that you personally reviewed the AI-assisted repair evidence and the repair is complete?';
+    if (!window.confirm(confirmationText)) return;
+    const reviewNote = manualOverride
+      ? 'Staff visually inspected the after-repair photo and manually confirmed the repair.'
+      : 'Staff reviewed AI-assisted repair verification and confirmed the repair.';
     try {
       const response = await fetch(`${apiBase}/api/tickets/${ticketId}/resolve/confirm`, {
-        method: 'POST', headers: { Authorization: `Bearer ${authSession.access_token}` },
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authSession.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manual_override: manualOverride, review_note: reviewNote }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || 'Resolution confirmation failed.');
       if (result.ticket) setTickets((current) => current.map((ticket) => (ticket._id || ticket.id) === ticketId ? { ...ticket, ...result.ticket } : ticket));
-      setAuthMessage('Repair evidence confirmed by staff. Ticket resolved.');
+      setAuthMessage(result.manual_override
+        ? 'Repair manually confirmed by staff after inspecting the photo. Ticket resolved and override audited.'
+        : 'AI-assisted repair evidence reviewed and confirmed by staff. Ticket resolved.');
     } catch (error) { setAuthMessage(error.message || 'Resolution confirmation failed.'); }
   };
 
@@ -1107,9 +1118,16 @@ function CommandCenterPage() {
                         Upload after-repair photo →
                       </label>
                     )}
-                    {status !== 'Resolved' && ticket.ai_metadata?.resolution_verification?.is_resolved === true && (
-                      <button type="button" className="card-action" onClick={() => confirmResolution(ticket._id || ticket.id)} disabled={!['staff', 'admin'].includes(profileRole)}>
-                        Confirm AI-assisted repair →
+                    {status !== 'Resolved' && ticket.after_image_path && (
+                      <button
+                        type="button"
+                        className="card-action"
+                        onClick={() => confirmResolution(ticket._id || ticket.id, ticket.ai_metadata?.resolution_verification?.is_resolved !== true)}
+                        disabled={!['staff', 'admin'].includes(profileRole)}
+                      >
+                        {ticket.ai_metadata?.resolution_verification?.is_resolved === true
+                          ? 'Confirm AI-assisted repair →'
+                          : 'Manually confirm after-photo repair →'}
                       </button>
                     )}
                   </div>
