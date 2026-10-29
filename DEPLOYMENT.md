@@ -22,6 +22,14 @@ The frontend defaults to the deployed Supabase Edge Function URL. Optional `VITE
 
 The migrations in `supabase/migrations` create the profiles, civic issues, issue events, comments, and votes schema, the PostGIS duplicate-report RPC, and the `civic-issue-images` Storage bucket. The API Edge Function is tracked at `supabase/functions/civicpulse-api/index.ts`.
 
+AI capabilities in `ai-vision-service`:
+- Image integrity/size/dimension checks and photo-quality analysis (blur, brightness, contrast, resolution).
+- OpenAI vision classification against the citizen-selected category, with conservative confidence, visible evidence, suggested action, bounding boxes, and human-review flags.
+- Generic YOLO object context is supplemental only; it is not treated as a civic-defect classifier and never fabricates a detection when no object is found.
+- Before/after repair comparison with confidence and evidence output. It cannot close a ticket by itself; a staff/admin account must explicitly confirm the AI-assisted result.
+- A live AI health endpoint is shown in the Command Center.
+- If the OpenAI key or service is unavailable, reports are still saved, but the result is clearly marked partial/unavailable and the app does not pretend a defect was detected.
+
 Implemented API flows:
 - Public issue intake with image upload, validation, AI triage when configured, and 15-metre same-category duplicate merging.
 - Issue list with filters and a database-backed dispatch board.
