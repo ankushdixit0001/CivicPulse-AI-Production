@@ -13,3 +13,5 @@ The files with those existing version names have therefore been **reconstructed 
 - Do not change the existing `civic-issue-images` bucket to private in the same release as the schema migration; the live frontend currently uses its public URL. A private-media migration needs signed URL support and access tests first.
 
 The live schema uses PostGIS in the `extensions` schema, enum types `civic_user_role`, `civic_issue_status`, and `civic_issue_severity`, and a public image bucket for compatibility. The privacy-first target described in the architecture docs is a future staged change, not a description of current live behavior.
+
+The older `20261029130000_initial_civicpulse_schema.sql` file was also in Git but was not recorded in the active project's migration history. Its table/type creation SQL would collide with the already-provisioned schema and with the later baseline, so it is now intentionally a no-op placeholder. The reconstructed `20261029151344` baseline is the source-controlled bootstrap for a clean reset. The database CI job will verify that chain in a disposable PostGIS database.
