@@ -80,3 +80,59 @@ jobs:
 
       - name: Check Edge Function
         run: deno check --node-modules-dir=auto supabase/functions/civicpulse-api/index.ts
+
+  schema-validation:
+    name: Apply SQL migrations to disposable PostGIS database
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: civicpulse
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d civicpulse"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/civicpulse
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Create disposable Supabase compatibility objects
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/bootstrap_supabase_ci.sql
+
+      - name: Apply every tracked migration in order
+        run: |
+          set -euo pipefail
+          for migration in $(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | sort); do
+            echo "Applying $migration"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+          done
+
+      - name: Assert required schema exists
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+            do \\$\$
+            begin
+              if to_regclass('public.civic_issues') is null
+                or to_regclass('public.issue_reports') is null
+                or to_regclass('public.issue_media') is null
+                or to_regclass('public.ai_analysis_runs') is null
+                or to_regclass('public.issue_assignments') is null
+                or to_regclass('public.notification_outbox') is null
+                or to_regprocedure('public.submit_civic_issue(uuid,text,text,double precision,double precision,text,text,smallint,public.civic_issue_severity,numeric,numeric,text,jsonb)') is null then
+                raise exception 'CivicPulse schema validation failed';
+              end if;
+            end
+            \\$\$;"
