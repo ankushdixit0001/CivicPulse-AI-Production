@@ -96,20 +96,50 @@ function TicketMap({ tickets }) {
     const lng = Number(coordinates[0]);
     const lat = Number(coordinates[1]);
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
-    return { ticket, position: [lat, lng] };
+    return { ticket, actualPosition: [lat, lng], position: [lat, lng], offsetForVisibility: false };
   }).filter(Boolean);
+
+  // Keep reports at identical coordinates separately clickable. The popup retains the
+  // true stored pin; only coincident markers are spread a few metres for visibility.
+  const coordinateGroups = new Map();
+  mappedTickets.forEach((item) => {
+    const key = `${item.actualPosition[0].toFixed(6)},${item.actualPosition[1].toFixed(6)}`;
+    if (!coordinateGroups.has(key)) coordinateGroups.set(key, []);
+    coordinateGroups.get(key).push(item);
+  });
+  coordinateGroups.forEach((group) => {
+    if (group.length < 2) return;
+    const [lat, lng] = group[0].actualPosition;
+    const radius = 0.00009;
+    group.forEach((item, index) => {
+      const angle = (2 * Math.PI * index) / group.length;
+      item.position = [
+        lat + radius * Math.cos(angle),
+        lng + (radius * Math.sin(angle)) / Math.max(0.2, Math.cos((lat * Math.PI) / 180)),
+      ];
+      item.offsetForVisibility = true;
+    });
+  });
+
   const points = mappedTickets.map((item) => item.position);
   return (
     <div className="ticket-map-wrap">
       <MapContainer className="ticket-map" center={points[0] || DEFAULT_MAP_CENTER} zoom={points.length ? 12 : 5} scrollWheelZoom>
         <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <FitTicketBounds points={points} />
-        {mappedTickets.map(({ ticket, position }) => {
+        {mappedTickets.map(({ ticket, position, actualPosition, offsetForVisibility }) => {
           const resolved = ticket.status === 'Resolved';
           const color = resolved ? '#16a34a' : ticket.severity === 'CRITICAL' ? '#dc2626' : ticket.severity === 'MEDIUM' ? '#d97706' : '#2563eb';
           return (
-            <CircleMarker key={ticket._id} center={position} radius={8} pathOptions={{ color: '#ffffff', weight: 2, fillColor: color, fillOpacity: 0.92 }}>
-              <Popup><strong>{ticket.defect_type || 'Civic issue'}</strong><br />{ticket.status || 'Pending'} · {ticket.severity || 'LOW'}<br />Priority: {ticket.priority_score ?? 0}<br />{ticket.description || 'No description provided'}</Popup>
+            <CircleMarker key={ticket._id || ticket.id} center={position} radius={8} pathOptions={{ color: '#ffffff', weight: 2, fillColor: color, fillOpacity: 0.92 }}>
+              <Popup>
+                <strong>{ticket.defect_type || 'Civic issue'}</strong><br />
+                {ticket.status || 'Pending'} · {ticket.severity || 'LOW'}<br />
+                Priority: {ticket.priority_score ?? 0}<br />
+                {ticket.description || 'No description provided'}<br />
+                <small>Reported pin: {actualPosition[0].toFixed(6)}, {actualPosition[1].toFixed(6)}</small>
+                {offsetForVisibility && <><br /><small>Marker separated slightly because multiple reports share this pin.</small></>}
+              </Popup>
             </CircleMarker>
           );
         })}
