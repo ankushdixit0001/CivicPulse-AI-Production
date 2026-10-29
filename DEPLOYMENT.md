@@ -93,3 +93,20 @@ The current YOLO model is a general object detector, not a validated civic-damag
 - [ ] Perform a real end-to-end smoke test with an uploaded image, a duplicate report, comments/vote, staff status changes, and verified after-repair evidence.
 - [x] Database-backed report rate limit (5 reports/hour per account/IP) and image-signature validation.
 - [ ] Add stronger anti-abuse controls (such as CAPTCHA and monitoring) before broad public launch; public report intake is intentionally open.
+
+
+## AI vision regression tests
+
+Run the image-processing and model-output safety tests from the repository root:
+
+```bash
+cd ai-vision-service
+python -m pip install fastapi==0.111.1 pillow==10.4.0 opencv-python-headless==4.10.0.84 numpy==1.26.4 python-multipart==0.0.9 httpx==0.27.2
+python -m unittest discover -s tests -v
+```
+
+The tests cover 0–1000 and 0–1 bounding boxes, invalid coordinates, non-finite confidence/priority values, image type/size/dimension validation, photo-quality flags, inference-token authentication, priority scoring, and repair-verification thresholds. The generic YOLO detector is optional for tests; the suite does not need model weights or an OpenAI key.
+
+## Repair confirmation behavior
+
+AI repair verification is advisory. A staff/admin member must inspect the after-repair photo and confirm the result. If AI verification is unavailable or inconclusive, the staff member can explicitly override it after a confirmation prompt; the action requires a review note and is written to the issue event history. The system never marks a ticket resolved solely because the AI returned a positive result.
