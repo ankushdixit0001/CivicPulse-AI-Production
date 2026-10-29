@@ -19,7 +19,7 @@ import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } fr
 import 'leaflet/dist/leaflet.css';
 
 const SUPABASE_URL = 'https://ccrhdrjywnaccthzyjte.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_1J0WlsyCsKVjP4XPOt_keg_kj0ZAsny';
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
 const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : `${SUPABASE_URL}/functions/v1/civicpulse-api`)).replace(/\/+$/, '');
 const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
 
