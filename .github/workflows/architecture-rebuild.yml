@@ -122,17 +122,18 @@ jobs:
 
       - name: Assert required schema exists
         run: |
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-            do \\$\$
-            begin
-              if to_regclass('public.civic_issues') is null
-                or to_regclass('public.issue_reports') is null
-                or to_regclass('public.issue_media') is null
-                or to_regclass('public.ai_analysis_runs') is null
-                or to_regclass('public.issue_assignments') is null
-                or to_regclass('public.notification_outbox') is null
-                or to_regprocedure('public.submit_civic_issue(uuid,text,text,double precision,double precision,text,text,smallint,public.civic_issue_severity,numeric,numeric,text,jsonb)') is null then
-                raise exception 'CivicPulse schema validation failed';
-              end if;
-            end
-            \\$\$;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if to_regclass('public.civic_issues') is null
+              or to_regclass('public.issue_reports') is null
+              or to_regclass('public.issue_media') is null
+              or to_regclass('public.ai_analysis_runs') is null
+              or to_regclass('public.issue_assignments') is null
+              or to_regclass('public.notification_outbox') is null
+              or to_regprocedure('public.submit_civic_issue(uuid,text,text,double precision,double precision,text,text,smallint,public.civic_issue_severity,numeric,numeric,text,jsonb)') is null then
+              raise exception 'CivicPulse schema validation failed';
+            end if;
+          end
+          $$;
+          SQL
