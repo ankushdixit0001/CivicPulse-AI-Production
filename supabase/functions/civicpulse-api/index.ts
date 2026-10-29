@@ -119,6 +119,21 @@ Deno.serve(async (req: Request) => {
   try {
     if (path.endsWith("/health") || path.endsWith("/api/health")) return json({ status: "ok", service: "CivicPulse API", database: "supabase", ai_configured: Boolean(AI_SERVICE_URL) });
 
+    if (req.method === "GET" && (path.endsWith("/api/ai/health") || path.endsWith("/ai/health"))) {
+      if (!AI_SERVICE_URL) return json({ configured: false, available: false, model: null, reason: "AI_SERVICE_URL is not configured." });
+      try {
+        const headers: Record<string, string> = {};
+        const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
+        if (aiToken) headers["x-civicpulse-ai-token"] = aiToken;
+        const response = await fetch(`${AI_SERVICE_URL}/health`, { headers, signal: AbortSignal.timeout(8000) });
+        if (!response.ok) return json({ configured: true, available: false, reason: `Vision service health check returned ${response.status}.` });
+        const health = await response.json();
+        return json({ configured: true, available: true, ...health });
+      } catch (error) {
+        return json({ configured: true, available: false, reason: String(error).slice(0, 180) });
+      }
+    }
+
     if (req.method === "GET" && (path.endsWith("/api/me") || path.endsWith("/me"))) {
       const user = await currentUser(req);
       if (!user) return json({ authenticated: false, user: null, role: null });
