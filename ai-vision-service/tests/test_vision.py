@@ -56,6 +56,14 @@ class VisionNormalizationTests(unittest.TestCase):
         }, "pothole", self.quality)
         self.assertEqual(result["visible_evidence"], [])
 
+    def test_poor_quality_forces_human_review_even_if_model_says_no(self):
+        poor_quality = {**self.quality, "quality": "poor", "quality_flags": ["blurry", "too_dark"]}
+        result = main._normalise_analysis({
+            "confidence": 0.99,
+            "human_review_required": False,
+        }, "pothole", poor_quality)
+        self.assertTrue(result["human_review_required"])
+
     def test_category_is_sanitized(self):
         result = main._normalise_analysis({
             "defect_type": "made-up-category",
