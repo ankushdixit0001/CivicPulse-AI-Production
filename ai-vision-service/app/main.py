@@ -358,6 +358,50 @@ async def analyze_issue(
     return _fallback_analysis(category, quality, objects)
 
 
+@app.post("/chat")
+async def civicpulse_chat(
+    message: str = Form(...),
+    context: str = Form(""),
+    x_civicpulse_ai_token: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    _check_token(x_civicpulse_ai_token)
+    question = message.strip()[:2000]
+    if not question:
+        raise HTTPException(status_code=400, detail="Enter a message.")
+    if not OPENAI_API_KEY:
+        return {
+            "status": "unavailable",
+            "reply": "AI chat is not configured yet. The CivicPulse help assistant can still answer common reporting questions, but generative AI requires OPENAI_API_KEY on the vision service.",
+            "reason": "OPENAI_API_KEY is not configured.",
+        }
+    system_prompt = (
+        "You are CivicPulse AI, a concise assistant for a civic issue reporting and municipal dispatch platform. "
+        "Help residents report potholes, garbage, sewage, and streetlight issues; explain photo submission, map location, "
+        "ticket status, prioritization, staff review, and repair verification. Use supplied live context when available. "
+        "Never claim to have submitted or changed a report. Do not invent live ticket data, government contacts, or policy. "
+        "AI image scores are triage estimates and municipal staff make final decisions. If asked about emergencies, advise contacting local emergency services. "
+        "Answer in the user's language and keep the response practical."
+    )
+    try:
+        result = await _openai_vision([{
+            "role": "system",
+            "content": system_prompt,
+        }, {
+            "role": "user",
+            "content": "Live CivicPulse context (may be empty): " + context[:4000] + "\\n\\nUser question: " + question,
+        }], max_tokens=650)
+        reply = result.get("reply") or result.get("answer")
+        if not isinstance(reply, str) or not reply.strip():
+            raise ValueError("Chat model returned no reply.")
+        return {"status": "success", "reply": reply.strip()[:4000], "model": OPENAI_MODEL}
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "reply": "I couldn't reach the AI chat model right now. You can still use the CivicPulse help assistant for reporting and ticket-workflow questions.",
+            "reason": str(exc)[:160],
+        }
+
+
 @app.post("/verify-resolution")
 async def verify_resolution(
     before: UploadFile = File(...),
