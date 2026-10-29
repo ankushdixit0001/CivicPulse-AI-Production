@@ -26,7 +26,32 @@ function normalizeIssue(row: any) {
   let location = row.location;
   if (typeof location === "string") {
     const match = location.match(/POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/i);
-    if (match) location = { type: "Point", coordinates: [Number(match[1]), Number(match[2])] };
+    if (match) {
+      location = { type: "Point", coordinates: [Number(match[1]), Number(match[2])] };
+    } else if (/^(?:01|00)[0-9a-f]+$/i.test(location) && location.length >= 42) {
+      // PostGIS geography is commonly returned by PostgREST as EWKB hex,
+      // e.g. 0101000020E6100000 + little-endian longitude + latitude.
+      try {
+        const bytes = new Uint8Array(location.length / 2);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = Number.parseInt(location.slice(i * 2, i * 2 + 2), 16);
+        const view = new DataView(bytes.buffer);
+        const littleEndian = view.getUint8(0) === 1;
+        const rawType = view.getUint32(1, littleEndian);
+        const baseType = rawType & 0xff;
+        const hasSrid = (rawType & 0x20000000) !== 0;
+        const coordinateOffset = 5 + (hasSrid ? 4 : 0);
+        if (baseType === 1 && bytes.length >= coordinateOffset + 16) {
+          const longitude = view.getFloat64(coordinateOffset, littleEndian);
+          const latitude = view.getFloat64(coordinateOffset + 8, littleEndian);
+          if (Number.isFinite(latitude) && Number.isFinite(longitude) &&
+              Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) {
+            location = { type: "Point", coordinates: [longitude, latitude] };
+          }
+        }
+      } catch {
+        // Keep unknown encodings intact; the map will safely skip invalid points.
+      }
+    }
   }
   return { ...row, location, _id: row.id, createdAt: row.created_at, updatedAt: row.updated_at };
 }
