@@ -20,7 +20,10 @@ except ImportError:  # Allows quality checks and unit tests without optional YOL
 
 APP_TITLE = "CivicPulse AI Vision Service"
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# Reject oversized decoded images before pixel buffers can exhaust small service instances.
+# The browser downsamples normal phone photos before upload; this is a server-side safety net.
 MAX_IMAGE_SIDE = 6000
+MAX_IMAGE_PIXELS = 16_000_000
 MAX_INFERENCE_SIDE = 1280
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip()
@@ -48,16 +51,21 @@ def _load_image(data: bytes) -> Tuple[Image.Image, np.ndarray]:
         raise HTTPException(status_code=413, detail="Image must be between 1 byte and 8 MB.")
     try:
         image = Image.open(io.BytesIO(data))
+        width, height = image.size
+        if width < 1 or height < 1 or width > MAX_IMAGE_SIDE or height > MAX_IMAGE_SIDE:
+            raise HTTPException(status_code=400, detail="Image dimensions must be 6000 x 6000 pixels or smaller.")
+        if width * height > MAX_IMAGE_PIXELS:
+            raise HTTPException(status_code=413, detail="Image is too large to process safely. Choose a photo under 16 megapixels.")
         image.verify()
         image = Image.open(io.BytesIO(data))
+        # Let JPEG decoders use reduced-resolution decoding before creating large pixel buffers.
+        image.draft("RGB", (MAX_INFERENCE_SIDE, MAX_INFERENCE_SIDE))
+        image.thumbnail((MAX_INFERENCE_SIDE, MAX_INFERENCE_SIDE), Image.Resampling.LANCZOS)
         image = ImageOps.exif_transpose(image)
+    except HTTPException:
+        raise
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.") from exc
-    if image.width > MAX_IMAGE_SIDE or image.height > MAX_IMAGE_SIDE:
-        raise HTTPException(status_code=400, detail="Image dimensions must be 6000 x 6000 pixels or smaller.")
-    # Bound decoded image memory before creating NumPy/OpenCV copies.
-    # This protects API clients that bypass browser-side image compression.
-    image.thumbnail((MAX_INFERENCE_SIDE, MAX_INFERENCE_SIDE), Image.Resampling.LANCZOS)
     image = image.convert("RGB")
     array = np.asarray(image)
     return image, cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
