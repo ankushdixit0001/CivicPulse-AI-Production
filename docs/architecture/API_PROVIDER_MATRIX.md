@@ -6,7 +6,7 @@
 
 ### No-key starting option
 
-Use **llmfaucet** as an optional keyless community inference adapter, not as the only production provider. Its public documentation describes an OpenAI-compatible chat-completions endpoint with anonymous access and capability-aware routing. It also explicitly says shared free upstream capacity may change, slow down or disappear and should not be the sole dependency for critical production workloads. Its published anonymous allowance is 20 requests/day per IP; image routing requires an upstream that currently supports multimodal input.
+Use **llmfaucet** as an optional keyless community inference adapter, not as the only production provider. Its public repository documents an OpenAI-compatible gateway and anonymous access, and says the router checks image/JSON capability before selecting upstreams. However, its API compatibility table still labels the chat-completions endpoint as in progress and warns that shared free capacity may change, slow down or disappear; therefore it is **not considered proven until a live smoke test passes**. Its published anonymous allowance is 20 requests/day per IP. Image routing succeeds only when a compatible multimodal upstream is available. See the provider's current [documentation](https://github.com/llmfaucet/llmfaucet).
 
 - Base URL: https://api.llmfaucet.dev/v1
 - Chat completion path: /chat/completions
@@ -81,4 +81,4 @@ Classify failures as timeout, rate-limited, upstream unavailable, unsupported ca
 - OpenStreetMap copyright and tile info: https://www.openstreetmap.org/copyright
 - Nominatim usage policy: https://operations.osmfoundation.org/policies/nominatim/
 
-These references describe current documented access, not a guarantee that a specific model/account/region is available when deployed. Re-run live probes before enabling a provider.
+These references describe documented access, not a guarantee that a model/account/region is live at deployment. Before promoting a provider, run `python scripts/smoke_test.py --base-url https://your-service.example --image ./sample.jpg --before ./before.jpg --after ./after.jpg` against the deployed FastAPI service and confirm each requested capability returns `status=success`. A chat-only test does not verify vision or repair comparison.
