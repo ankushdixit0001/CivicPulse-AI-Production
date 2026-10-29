@@ -552,7 +552,7 @@ function ReportPage() {
     formData.append('status', 'Pending');
 
     setSubmitting(true);
-    setStatus('Submitting issue to AI triage engine...');
+    setStatus('Submitting report. AI analysis may be partial if the vision service is unavailable.');
 
     let submissionFingerprint = '';
     let submissionKey = '';
@@ -614,7 +614,7 @@ function ReportPage() {
       const ai = result?.ticket?.ai_metadata || {};
       const aiSummary = ai.summary || (result?.ai_status === 'success'
         ? 'AI triage completed; staff should review the result.'
-        : 'Issue saved. AI classification is limited until the vision model is configured.');
+        : 'Issue saved. AI classification is unavailable or partial; municipal staff can still review the saved report.');
       setStatus(`${result?.message || 'Ticket submitted successfully.'} AI triage: ${aiSummary}`);
       setTimeout(() => {
         window.location.href = '/command-center';
