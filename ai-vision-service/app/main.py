@@ -33,7 +33,9 @@ except Exception:
 
 
 def _check_token(token: Optional[str]) -> None:
-    if VISION_API_TOKEN and token != VISION_API_TOKEN:
+    if not VISION_API_TOKEN:
+        raise HTTPException(status_code=503, detail="VISION_API_TOKEN is not configured; vision inference is disabled.")
+    if token != VISION_API_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid vision-service token.")
 
 
