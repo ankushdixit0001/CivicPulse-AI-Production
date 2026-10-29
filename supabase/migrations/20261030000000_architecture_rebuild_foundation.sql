@@ -47,7 +47,11 @@ create table if not exists public.issue_reports (
   reporter_id uuid references auth.users(id) on delete set null,
   defect_type text not null check (defect_type in ('pothole', 'garbage', 'sewage', 'streetlight', 'unknown')),
   description text not null check (char_length(description) between 5 and 2000),
-  location geography(Point, 4326) not null,
+  ai_metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(ai_metadata) = 'object'),
+  ai_confidence numeric(5,4) not null default 0 check (ai_confidence between 0 and 1),
+  ai_priority_score smallint not null default 0 check (ai_priority_score between 0 and 100),
+  ai_severity public.civic_issue_severity not null default 'LOW',
+  location extensions.geography(Point, 4326) not null,
   landmark text check (landmark is null or char_length(landmark) <= 200),
   submission_status text not null default 'canonical'
     check (submission_status in ('canonical', 'merged', 'needs_review', 'rejected', 'spam')),
@@ -193,3 +197,204 @@ comment on table public.ai_analysis_runs is 'Sanitized AI task audit. Never stor
 comment on table public.ai_feedback is 'Staff-reviewed labels for offline model/provider quality evaluation.';
 comment on table public.issue_subscriptions is 'Per-user issue status notification preferences.';
 comment on table public.notification_outbox is 'Transactional notification queue; delivery requires an explicitly configured worker/provider.';
+
+
+-- The deployed RPC previously counted every nearby duplicate as an upvote and
+-- discarded the individual report/photo context. Replace it with an idempotent
+-- version that preserves every submission, stores media metadata, and serializes
+-- same-category matching to avoid concurrent duplicate tickets at demo scale.
+create or replace function public.submit_civic_issue(
+  p_reporter_id uuid,
+  p_defect_type text,
+  p_description text,
+  p_lat double precision,
+  p_lng double precision,
+  p_landmark text default ''::text,
+  p_zone text default 'unassigned'::text,
+  p_priority_score smallint default 0,
+  p_severity public.civic_issue_severity default 'LOW'::public.civic_issue_severity,
+  p_confidence numeric default 0,
+  p_before_damage_pct numeric default 0,
+  p_before_image_path text default null::text,
+  p_ai_metadata jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $function$
+declare
+  point extensions.geography;
+  found_issue public.civic_issues%rowtype;
+  found_report public.issue_reports%rowtype;
+  new_report public.issue_reports%rowtype;
+  merged boolean := false;
+  idempotency_key text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_key', '')), '');
+  idempotency_subject text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_subject', '')), '');
+  clean_ai_metadata jsonb := coalesce(p_ai_metadata, '{}'::jsonb);
+  upload_content_type text := nullif(trim(coalesce(p_ai_metadata ->> 'upload_content_type', '')), '');
+  upload_bucket_id text := nullif(trim(coalesce(p_ai_metadata ->> 'upload_bucket_id', '')), '');
+  upload_size_bytes bigint := nullif(trim(coalesce(p_ai_metadata ->> 'upload_size_bytes', '')), '')::bigint;
+  upload_visibility text := coalesce(nullif(trim(coalesce(p_ai_metadata ->> 'upload_visibility', '')), ''), 'public');
+begin
+  if p_defect_type not in ('pothole','garbage','sewage','streetlight','unknown') then
+    raise exception 'Unsupported issue category';
+  end if;
+  if char_length(trim(coalesce(p_description,''))) not between 5 and 2000 then
+    raise exception 'Description must be between 5 and 2000 characters';
+  end if;
+  if p_lat is null or p_lat < -90 or p_lat > 90 or p_lng is null or p_lng < -180 or p_lng > 180 then
+    raise exception 'Invalid coordinates';
+  end if;
+  if upload_visibility not in ('private', 'public') then
+    upload_visibility := 'private';
+  end if;
+  idempotency_subject := coalesce(idempotency_subject, p_reporter_id::text, 'anonymous');
+  idempotency_key := coalesce(idempotency_key, gen_random_uuid()::text);
+  if char_length(idempotency_subject) not between 1 and 160
+     or char_length(idempotency_key) not between 8 and 160 then
+    raise exception 'Invalid idempotency scope or key';
+  end if;
+
+  -- Same-category advisory locks prevent two concurrent submissions from both
+  -- creating a new canonical ticket when a matching ticket is within 15 metres.
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('civicpulse:submit:' || p_defect_type, 0)
+  );
+
+  select * into found_report
+  from public.issue_reports r
+  where r.idempotency_subject = idempotency_subject
+    and r.idempotency_key = idempotency_key
+  limit 1
+  for update;
+
+  if found_report.id is not null then
+    select * into found_issue from public.civic_issues i where i.id = found_report.issue_id;
+    if found_issue.id is null then
+      raise exception 'Idempotent report exists but its canonical ticket is missing';
+    end if;
+    return jsonb_build_object(
+      'merged', found_report.submission_status = 'merged',
+      'idempotent_replay', true,
+      'report_id', found_report.id,
+      'ticket', (to_jsonb(found_issue) - 'location') ||
+        jsonb_build_object('location', extensions.st_asgeojson(found_issue.location)::jsonb)
+    );
+  end if;
+
+  point := extensions.st_setsrid(extensions.st_makepoint(p_lng, p_lat), 4326)::extensions.geography;
+  select * into found_issue
+  from public.civic_issues i
+  where i.status <> 'Resolved'
+    and i.defect_type = p_defect_type
+    and extensions.st_dwithin(i.location, point, 15)
+  order by extensions.st_distance(i.location, point)
+  limit 1
+  for update;
+
+  clean_ai_metadata := clean_ai_metadata
+    - 'submission_idempotency_key'
+    - 'submission_idempotency_subject'
+    - 'upload_content_type'
+    - 'upload_bucket_id'
+    - 'upload_size_bytes'
+    - 'upload_visibility';
+
+  if found_issue.id is not null then
+    update public.civic_issues
+    set report_frequency = report_frequency + 1,
+        duplicate_count = duplicate_count + 1
+    where id = found_issue.id
+    returning * into found_issue;
+    merged := true;
+  else
+    insert into public.civic_issues(
+      reporter_id, defect_type, description, priority_score, severity, location, zone, confidence,
+      upvote_count, report_frequency, duplicate_count, before_damage_pct, before_image_path, ai_metadata, landmark
+    )
+    values(
+      p_reporter_id,
+      p_defect_type,
+      trim(p_description),
+      greatest(0, least(100, coalesce(p_priority_score, 0))),
+      coalesce(p_severity, 'LOW'),
+      point,
+      left(coalesce(nullif(trim(p_zone), ''), 'unassigned'), 80),
+      greatest(0, least(1, coalesce(p_confidence, 0))),
+      1,
+      1,
+      0,
+      greatest(0, least(100, coalesce(p_before_damage_pct, 0))),
+      p_before_image_path,
+      coalesce(clean_ai_metadata, '{}'::jsonb),
+      left(coalesce(p_landmark, ''), 200)
+    )
+    returning * into found_issue;
+  end if;
+
+  insert into public.issue_reports(
+    issue_id, reporter_id, defect_type, description, ai_metadata, ai_confidence, ai_priority_score,
+    ai_severity, location, landmark, submission_status, idempotency_subject, idempotency_key
+  )
+  values(
+    found_issue.id, p_reporter_id, p_defect_type, trim(p_description), coalesce(clean_ai_metadata, '{}'::jsonb),
+    greatest(0, least(1, coalesce(p_confidence, 0))),
+    greatest(0, least(100, coalesce(p_priority_score, 0))),
+    coalesce(p_severity, 'LOW'),
+    point,
+    left(coalesce(p_landmark, ''), 200),
+    case when merged then 'merged' else 'canonical' end,
+    idempotency_subject,
+    idempotency_key
+  )
+  returning * into new_report;
+
+  if p_before_image_path is not null
+     and upload_content_type in ('image/jpeg', 'image/png', 'image/webp')
+     and upload_size_bytes between 1 and 8388608 then
+    insert into public.issue_media(
+      issue_id, report_id, uploaded_by, bucket_id, object_path, media_role, content_type,
+      size_bytes, visibility, moderation_status
+    )
+    values(
+      found_issue.id,
+      new_report.id,
+      p_reporter_id,
+      coalesce(upload_bucket_id, 'civic-issue-images'),
+      p_before_image_path,
+      'report_photo',
+      upload_content_type,
+      upload_size_bytes,
+      upload_visibility,
+      case when upload_visibility = 'public' then 'approved' else 'pending' end
+    )
+    on conflict (bucket_id, object_path) do nothing;
+  end if;
+
+  if merged then
+    insert into public.issue_events(issue_id, actor_id, event_type, note, metadata)
+    values(
+      found_issue.id, p_reporter_id, 'merged', 'Nearby report linked to this incident',
+      jsonb_build_object('source', 'public_api', 'report_id', new_report.id)
+    );
+  else
+    insert into public.issue_events(issue_id, actor_id, event_type, new_status, note, metadata)
+    values(
+      found_issue.id, p_reporter_id, 'created', found_issue.status, 'Issue reported',
+      jsonb_build_object('source', 'public_api', 'report_id', new_report.id)
+    );
+  end if;
+
+  return jsonb_build_object(
+    'merged', merged,
+    'idempotent_replay', false,
+    'report_id', new_report.id,
+    'ticket', (to_jsonb(found_issue) - 'location') ||
+      jsonb_build_object('location', extensions.st_asgeojson(found_issue.location)::jsonb)
+  );
+end;
+$function$;
+
+-- The migration's new caller contract is still service-role only.
+revoke all on function public.submit_civic_issue(uuid,text,text,double precision,double precision,text,text,smallint,public.civic_issue_severity,numeric,numeric,text,jsonb) from public, anon, authenticated;
+grant execute on function public.submit_civic_issue(uuid,text,text,double precision,double precision,text,text,smallint,public.civic_issue_severity,numeric,numeric,text,jsonb) to service_role;
