@@ -706,11 +706,37 @@ function CommandCenterPage() {
   useEffect(() => {
     if (!authSession?.access_token) { setProfileRole('resident'); return; }
     let cancelled = false;
+    const refreshSessionIfNeeded = async () => {
+      const expiresAt = Number(authSession.expires_at || 0);
+      if (!authSession.refresh_token || !expiresAt || expiresAt > Math.floor(Date.now() / 1000) + 120) return;
+      try {
+        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+          method: 'POST',
+          headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: authSession.refresh_token }),
+        });
+        const refreshed = await response.json();
+        if (!response.ok || !refreshed.access_token) throw new Error('Session expired');
+        const nextSession = { ...refreshed, expires_at: refreshed.expires_at || Math.floor(Date.now() / 1000) + Number(refreshed.expires_in || 3600) };
+        if (!cancelled) {
+          localStorage.setItem('civicpulse_session', JSON.stringify(nextSession));
+          setAuthSession(nextSession);
+        }
+      } catch {
+        if (!cancelled && expiresAt <= Math.floor(Date.now() / 1000)) {
+          localStorage.removeItem('civicpulse_session');
+          setAuthSession(null);
+          setAuthMessage('Your session expired. Please sign in again.');
+        }
+      }
+    };
+    refreshSessionIfNeeded();
+    const refreshTimer = window.setInterval(refreshSessionIfNeeded, 60000);
     fetch(`${apiBase}/api/me`, { headers: { Authorization: `Bearer ${authSession.access_token}` } })
       .then((response) => response.json())
       .then((profile) => { if (!cancelled) setProfileRole(profile.role || 'resident'); })
       .catch(() => { if (!cancelled) setProfileRole('resident'); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; window.clearInterval(refreshTimer); };
   }, [authSession]);
 
   const authenticate = async (event) => {
@@ -728,9 +754,10 @@ function CommandCenterPage() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.msg || result.message || result.error_description || 'Authentication failed.');
       if (result.access_token) {
-        localStorage.setItem('civicpulse_session', JSON.stringify(result));
-        setAuthSession(result);
-        setAuthMessage('Signed in. Your database role is ' + (result.user?.role || 'resident') + '; staff actions require the staff/admin profile role.');
+        const session = { ...result, expires_at: result.expires_at || Math.floor(Date.now() / 1000) + Number(result.expires_in || 3600) };
+        localStorage.setItem('civicpulse_session', JSON.stringify(session));
+        setAuthSession(session);
+        setAuthMessage('Signed in. Staff actions require the staff/admin profile role.');
       } else {
         setAuthMessage('Account created. If email confirmation is enabled, confirm your email and then sign in.');
         setAuthMode('signin');
