@@ -114,7 +114,7 @@ function TicketMap({ tickets }) {
           );
         })}
       </MapContainer>
-      <div className="ticket-map-caption">{mappedTickets.length ? `${mappedTickets.length} mapped incident${mappedTickets.length === 1 ? '' : 's'}` : 'No mapped reports yet — the map will populate when reports are submitted.'}</div>
+      <div className="ticket-map-caption">{mappedTickets.length ? `${mappedTickets.length} mapped incident${mappedTickets.length === 1 ? '' : 's'} · all reports, independent of queue filters` : 'No mapped reports yet — the map will populate when reports are submitted.'}</div>
     </div>
   );
 }
@@ -325,11 +325,13 @@ function ReportPage() {
     if (!file) return;
     setAnalysisResult(null);
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setPreview('');
       setStatus('Please choose a JPG, PNG, or WebP image.');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
     if (file.size > 8 * 1024 * 1024) {
+      setPreview('');
       setStatus('Image must be 8 MB or smaller.');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
