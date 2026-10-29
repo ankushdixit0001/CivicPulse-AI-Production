@@ -149,13 +149,24 @@ def _generic_objects(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
     return sorted(objects, key=lambda item: item["confidence"], reverse=True)[:30]
 
 
+def _bounded_number(value: Any, lower: float, upper: float, default: float = 0.0) -> float:
+    """Clamp a model-provided number, treating NaN/Infinity and malformed values as safe defaults."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(lower, min(upper, number))
+
+
 def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality: Dict[str, Any]) -> Dict[str, Any]:
     category = str(result.get("defect_type", requested_category)).lower().strip()
     if category not in ALLOWED_CATEGORIES:
         category = "unknown"
-    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
-    damage = max(0.0, min(100.0, float(result.get("damage_coverage_pct", 0) or 0)))
-    score = max(0.0, min(100.0, float(result.get("priority_score", 0) or 0)))
+    confidence = _bounded_number(result.get("confidence", 0), 0.0, 1.0)
+    damage = _bounded_number(result.get("damage_coverage_pct", 0), 0.0, 100.0)
+    score = _bounded_number(result.get("priority_score", 0), 0.0, 100.0)
     severity = str(result.get("severity", "LOW")).upper()
     if severity not in {"LOW", "MEDIUM", "CRITICAL"}:
         severity = "LOW"
@@ -185,7 +196,7 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
                 continue
             clean_boxes.append({
                 "label": str(item.get("label", "damage"))[:80],
-                "confidence": round(max(0.0, min(1.0, float(item.get("confidence", confidence)))), 3),
+                "confidence": round(_bounded_number(item.get("confidence", confidence), 0.0, 1.0, confidence), 3),
                 "bbox": coords,
             })
         except (TypeError, ValueError, OverflowError):
@@ -235,8 +246,8 @@ def _priority_from_ai(result: Dict[str, Any], requested_category: str) -> Dict[s
     category = str(result.get("defect_type", requested_category)).lower()
     if category not in ALLOWED_CATEGORIES:
         category = "unknown"
-    damage = max(0.0, min(100.0, float(result.get("damage_coverage_pct", 0) or 0)))
-    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
+    damage = _bounded_number(result.get("damage_coverage_pct", 0), 0.0, 100.0)
+    confidence = _bounded_number(result.get("confidence", 0), 0.0, 1.0)
     # Keep urgency separate from confidence. Never boost an issue solely because the model is confident.
     weight = CATEGORY_WEIGHTS.get(category, 1.0)
     priority = min(100.0, damage * weight + (15.0 if category == "sewage" else 0.0))
@@ -257,7 +268,7 @@ def _normalise_boxes(boxes: Any) -> List[Dict[str, Any]]:
         try:
             coords = [max(0.0, min(1000.0, float(value))) for value in item["bbox"]]
             clean.append({"label": str(item.get("label", "damage"))[:80],
-                          "confidence": round(max(0.0, min(1.0, float(item.get("confidence", 0) or 0))), 3),
+                          "confidence": round(_bounded_number(item.get("confidence", 0), 0.0, 1.0), 3),
                           "bbox": coords})
         except (TypeError, ValueError):
             continue
@@ -374,10 +385,10 @@ async def verify_resolution(
             "reason": str(exc)[:160], "human_review_required": True,
         }
 
-    confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
-    score = max(0.0, min(100.0, float(result.get("resolution_score", 0) or 0)))
-    before_damage = max(0.0, min(100.0, float(result.get("before_damage_pct", 0) or 0)))
-    after_damage = max(0.0, min(100.0, float(result.get("after_damage_pct", 0) or 0)))
+    confidence = _bounded_number(result.get("confidence", 0), 0.0, 1.0)
+    score = _bounded_number(result.get("resolution_score", 0), 0.0, 100.0)
+    before_damage = _bounded_number(result.get("before_damage_pct", 0), 0.0, 100.0)
+    after_damage = _bounded_number(result.get("after_damage_pct", 0), 0.0, 100.0)
     # A model verdict is evidence for staff, not sole legal/operational authority.
     verified = bool(result.get("is_resolved") is True and confidence >= 0.85 and score >= 85
                      and before_quality["quality"] != "poor" and after_quality["quality"] != "poor")
