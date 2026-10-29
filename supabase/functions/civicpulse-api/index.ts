@@ -70,109 +70,36 @@ async function requireStaff(req: Request) {
   if (!profile || !["staff", "admin"].includes(profile.role)) return { error: "Staff or admin role is required.", status: 403 as const };
   return { user, role: profile.role };
 }
-const FREE_AI_URL = "https://api.llmfaucet.dev/v1/chat/completions";
-const FREE_AI_MODEL = "auto:smart";
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
-  return btoa(binary);
-}
-async function imageDataUrl(file: File | Blob) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const mime = file.type?.startsWith("image/") ? file.type : "image/jpeg";
-  return "data:" + mime + ";base64," + bytesToBase64(bytes);
-}
-function parseModelJson(content: string) {
-  const cleaned = content.trim().replace(/^json\s*/i, "").trim();
-  const start = cleaned.indexOf("{"), end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("AI provider returned no JSON object.");
-  return JSON.parse(cleaned.slice(start, end + 1));
-}
-async function freeModelCompletion(messages: any[], maxTokens = 700) {
-  const response = await fetch(FREE_AI_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": "Bearer free" },
-    body: JSON.stringify({ model: FREE_AI_MODEL, messages, max_tokens: maxTokens, temperature: 0.1 }),
-    signal: AbortSignal.timeout(45000),
-  });
-  if (!response.ok) throw new Error("Free AI gateway returned HTTP " + response.status);
-  const payload = await response.json();
-  const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw new Error("AI provider returned an empty response.");
-  return content;
-}
-async function analyzeWithFreeModel(file: File, defectType: string) {
-  const image = await imageDataUrl(file);
-  const prompt = "Inspect this civic infrastructure photo for the selected category: " + defectType + ". Be conservative; do not infer defects that are not visible. If uncertain, use defect_type unknown and confidence below 0.6. Return ONLY a JSON object with keys: defect_type (pothole|garbage|sewage|streetlight|unknown), confidence (0..1), damage_coverage_pct (0..100), safety_risk (boolean), summary, visible_evidence (array of strings), recommended_action, human_review_required (boolean), bounding_boxes (array of {label,confidence,bbox}). bbox is [x1,y1,x2,y2] on a 0..1000 scale; only include boxes for visible issue evidence.";
-  const content = await freeModelCompletion([{ role: "user", content: [
-    { type: "text", text: prompt }, { type: "image_url", image_url: { url: image, detail: "high" } },
-  ] }], 900);
-  const result = parseModelJson(content);
-  const categories = new Set(["pothole", "garbage", "sewage", "streetlight", "unknown"]);
-  let category = String(result.defect_type || defectType).toLowerCase();
-  if (!categories.has(category)) category = "unknown";
-  const clamp = (value: unknown, min: number, max: number, fallback = 0) => {
-    const n = Number(value);
-    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
-  };
-  const weights: Record<string, number> = { pothole: 1.2, garbage: 1.1, sewage: 1.5, streetlight: 1, unknown: 1 };
-  const confidence = clamp(result.confidence, 0, 1);
-  const damage = clamp(result.damage_coverage_pct, 0, 100);
-  let priority = Math.min(100, damage * weights[category] + (category === "sewage" ? 15 : 0));
-  if (result.safety_risk === true) priority = Math.max(priority, 75);
-  const severity = priority >= 75 ? "CRITICAL" : priority >= 35 ? "MEDIUM" : "LOW";
-  const boxes = Array.isArray(result.bounding_boxes) ? result.bounding_boxes.slice(0, 30).map((b: any) => {
-    if (!b || !Array.isArray(b.bbox) || b.bbox.length !== 4) return null;
-    const raw = b.bbox.map((v: unknown) => Number(v));
-    if (!raw.every((v: number) => Number.isFinite(v) && v >= 0 && v <= 1000)) return null;
-    const coords = raw.map((v: number) => v > 1 ? v / 1000 : v);
-    if (coords[2] <= coords[0] || coords[3] <= coords[1]) return null;
-    return { label: String(b.label || "visible issue").slice(0, 80), confidence: clamp(b.confidence, 0, 1, confidence), bbox: coords };
-  }).filter(Boolean) : [];
-  return { status: "success", model: FREE_AI_MODEL, model_source: "llmfaucet_vision", defect_type: category, confidence, severity,
-    priority_score: Math.round(priority * 100) / 100, damage_coverage_pct: damage,
-    summary: String(result.summary || "AI visual triage completed; staff review is required.").slice(0, 500),
-    visible_evidence: Array.isArray(result.visible_evidence) ? result.visible_evidence.filter((v: unknown) => typeof v === "string").slice(0, 8) : [],
-    recommended_action: String(result.recommended_action || "Ask municipal staff to inspect the reported issue.").slice(0, 500),
-    human_review_required: true, bounding_boxes: boxes,
-    limitations: ["Free community inference may be rate-limited; AI output is an estimate and requires staff confirmation."] };
-}
 async function analyze(file: File, defectType: string) {
+  const unavailable = (reason: string) => ({
+    status: "unavailable", provider: "none", model_source: "none", defect_type: defectType,
+    confidence: 0, severity: "LOW", priority_score: 0, damage_coverage_pct: 0,
+    summary: "AI defect reasoning is unavailable. The report can still be saved for manual review.",
+    visible_evidence: [], recommended_action: "Municipal staff should inspect the submitted photo manually.",
+    bounding_boxes: [], human_review_required: true, metadata: { reason: reason.slice(0, 160) },
+  });
+  if (!AI_SERVICE_URL) return unavailable("AI_SERVICE_URL is not configured.");
+  const aiToken = Deno.env.get("AI_SERVICE_TOKEN") || "";
+  if (!aiToken) return unavailable("AI_SERVICE_TOKEN is not configured.");
   try {
-    if (AI_SERVICE_URL) {
-      const form = new FormData();
-      form.append("file", file, file.name || "issue.jpg");
-      form.append("defect_type", defectType);
-      const headers: Record<string, string> = {};
-      const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
-      if (aiToken) headers["x-civicpulse-ai-token"] = aiToken;
-      const response = await fetch(AI_SERVICE_URL + "/analyze", { method: "POST", headers, body: form, signal: AbortSignal.timeout(45000) });
-      if (response.ok) {
-        const result = await response.json();
-        if (result?.status === "success") return result;
-      }
+    const form = new FormData();
+    form.append("file", file, file.name || "issue.jpg");
+    form.append("defect_type", defectType);
+    const response = await fetch(AI_SERVICE_URL + "/analyze", {
+      method: "POST",
+      headers: { "x-civicpulse-ai-token": aiToken },
+      body: form,
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!response.ok) return unavailable("Vision service returned HTTP " + response.status + ".");
+    const result = await response.json();
+    if (!result || !["success", "partial", "unavailable"].includes(result.status)) {
+      return unavailable("Vision service returned an invalid response.");
     }
-    return await analyzeWithFreeModel(file, defectType);
-  } catch (error) {
-    return { status: "unavailable", defect_type: defectType, confidence: 0, severity: "LOW", priority_score: 0, damage_coverage_pct: 0, metadata: { reason: String(error).slice(0, 200) }, bounding_boxes: [], human_review_required: true };
+    return result;
+  } catch {
+    return unavailable("Vision service could not be reached.");
   }
-}
-async function verifyWithFreeModel(before: File | Blob, after: File) {
-  const beforeImage = await imageDataUrl(before), afterImage = await imageDataUrl(after);
-  const prompt = "Compare BEFORE and AFTER photos of the same civic issue. Do not infer repair just because lighting or angle changed. If scenes are not comparable or evidence is ambiguous, is_resolved must be false. Return ONLY JSON with keys: is_resolved (boolean), confidence (0..1), resolution_score (0..100), before_damage_pct (0..100), after_damage_pct (0..100), visible_change, evidence (array), human_review_required. Set is_resolved true only when clearly repaired and confidence >= 0.85.";
-  const content = await freeModelCompletion([{ role: "user", content: [
-    { type: "text", text: prompt }, { type: "text", text: "BEFORE photo:" }, { type: "image_url", image_url: { url: beforeImage, detail: "high" } },
-    { type: "text", text: "AFTER photo:" }, { type: "image_url", image_url: { url: afterImage, detail: "high" } },
-  ] }], 700);
-  const r = parseModelJson(content);
-  const confidence = Math.max(0, Math.min(1, Number(r.confidence) || 0));
-  const score = Math.max(0, Math.min(100, Number(r.resolution_score) || 0));
-  const beforeDamage = Math.max(0, Math.min(100, Number(r.before_damage_pct) || 0));
-  const afterDamage = Math.max(0, Math.min(100, Number(r.after_damage_pct) || 0));
-  const passed = r.is_resolved === true && confidence >= 0.85 && score >= 85 && beforeDamage >= 10 && afterDamage <= Math.max(5, beforeDamage * 0.2);
-  return { status: "success", is_resolved: passed, confidence, resolution_score: score, before_damage_pct: beforeDamage, after_damage_pct: afterDamage,
-    visible_change: String(r.visible_change || "").slice(0, 500), evidence: Array.isArray(r.evidence) ? r.evidence.filter((v: unknown) => typeof v === "string").slice(0, 8) : [],
-    human_review_required: !passed, provider: "llmfaucet", limitations: ["AI verification is assistive evidence; staff must inspect and confirm the repair."] };
 }
 
 async function uploadImage(file: File, prefix: string) {
@@ -256,27 +183,38 @@ Deno.serve(async (req: Request) => {
     if (path.endsWith("/health") || path.endsWith("/api/health")) return json({ status: "ok", service: "CivicPulse API", database: "supabase", ai_configured: Boolean(AI_SERVICE_URL) });
 
     if (req.method === "GET" && (path.endsWith("/api/ai/health") || path.endsWith("/ai/health"))) {
-      if (!AI_SERVICE_URL) return json({ configured: true, available: true, repair_verification_available: true, provider: "llmfaucet", model: FREE_AI_MODEL, defect_reasoning_configured: true, repair_verification_configured: true, mode: "keyless-community-inference", note: "Free shared inference is configured; upstream availability and image support may vary." });
+      if (!AI_SERVICE_URL) return json({
+        configured: false, available: false, defect_reasoning_configured: false, defect_reasoning_available: false,
+        repair_verification_configured: false, repair_verification_available: false, provider: "none",
+        reason: "AI_SERVICE_URL is not configured. Reports remain available for manual review.",
+      });
+      const aiToken = Deno.env.get("AI_SERVICE_TOKEN") || "";
+      if (!aiToken) return json({
+        configured: true, available: false, defect_reasoning_configured: false, repair_verification_configured: false,
+        provider: "none", reason: "AI_SERVICE_TOKEN is missing from Supabase secrets.",
+      });
       try {
-        const headers: Record<string, string> = {};
-        const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
-        if (aiToken) headers["x-civicpulse-ai-token"] = aiToken;
-        const response = await fetch(`${AI_SERVICE_URL}/health`, { headers, signal: AbortSignal.timeout(8000) });
-        if (!response.ok) return json({ configured: true, available: false, reason: `Vision service health check returned ${response.status}.` });
+        const response = await fetch(`${AI_SERVICE_URL}/health`, { signal: AbortSignal.timeout(8000) });
+        if (!response.ok) return json({ configured: true, available: false, repair_verification_available: false, provider: "none", reason: `Vision service health check returned ${response.status}.` });
         const health = await response.json();
         const analysisConfigured = health?.defect_reasoning_configured === true && health?.inference_auth_configured === true;
         const repairConfigured = health?.repair_verification_configured === true && health?.inference_auth_configured === true;
+        const analysisAvailable = health?.defect_reasoning_available === true;
+        const repairAvailable = health?.repair_verification_available === true;
         return json({
-          configured: true,
-          available: analysisConfigured,
-          repair_verification_available: repairConfigured,
           ...health,
-          available: analysisConfigured,
-          repair_verification_available: repairConfigured,
-          ...(!analysisConfigured ? { reason: "Vision service is running, but OPENAI_API_KEY or VISION_API_TOKEN is not configured." } : {}),
+          configured: true,
+          available: analysisAvailable,
+          repair_verification_available: repairAvailable,
+          defect_reasoning_configured: analysisConfigured,
+          defect_reasoning_available: analysisAvailable,
+          repair_verification_configured: repairConfigured,
+          reason: !analysisAvailable
+            ? (health?.readiness_message || (analysisConfigured ? "Provider is configured but no recent successful image analysis has been recorded." : "No privacy-permitted image provider is configured."))
+            : undefined,
         });
-      } catch (error) {
-        return json({ configured: true, available: false, reason: String(error).slice(0, 180) });
+      } catch {
+        return json({ configured: true, available: false, repair_verification_available: false, provider: "none", reason: "Vision service health check failed." });
       }
     }
 
@@ -291,7 +229,7 @@ Deno.serve(async (req: Request) => {
       if (file.size < 1 || file.size > 8 * 1024 * 1024) return fail("Image must be between 1 byte and 8 MB.");
       if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase())) return fail("Upload a JPG, PNG, or WebP photo.");
       const analysis = await analyze(file, defect);
-      const available = analysis.status === "success" && ["openai_vision", "llmfaucet_vision"].includes(analysis.model_source);
+      const available = analysis.status === "success" && ["openai_vision", "gemini_vision", "openrouter_vision"].includes(analysis.model_source);
       return json({
         available,
         analysis,
@@ -431,7 +369,11 @@ Deno.serve(async (req: Request) => {
             if (!response.ok) throw new Error("AI verification service failed.");
             verification = await response.json();
           } else {
-            verification = await verifyWithFreeModel(beforeBlob, file);
+            verification = {
+              status: "unavailable", is_resolved: false, resolution_score: 0,
+              reason: "AI_SERVICE_URL is not configured; staff must review the evidence manually.",
+              human_review_required: true,
+            };
           }
         } catch (error) { verification = { status: "unavailable", is_resolved: false, reason: String(error).slice(0, 200), human_review_required: true }; }
         const update = {
@@ -534,24 +476,19 @@ Deno.serve(async (req: Request) => {
           });
           if (response.ok) {
             const aiReply = await response.json();
-            if (aiReply?.status === "success" && typeof aiReply.reply === "string" && aiReply.reply.trim()) {
-              return json({ reply: aiReply.reply, mode: "ai", context: { recent_reports: context.total_recent_reports } });
+            if (["success", "partial"].includes(aiReply?.status) && typeof aiReply.reply === "string" && aiReply.reply.trim()) {
+              return json({
+                reply: aiReply.reply,
+                mode: aiReply.status === "success" ? "ai" : "help",
+                provider: aiReply.provider || "none",
+                ai_status: aiReply.status,
+                context: { recent_reports: context.total_recent_reports },
+              });
             }
           }
         } catch (error) {
           console.error("AI chat provider unavailable; using civic help fallback:", String(error).slice(0, 160));
         }
-      }
-
-      // No-key generative chat fallback through the public community inference gateway.
-      try {
-        const aiReply = await freeModelCompletion([
-          { role: "system", content: "You are CivicPulse AI, a practical civic issue reporting and municipal dispatch assistant. Help with potholes, garbage, sewage, streetlights, photo submission, map location, ticket status, prioritization and repair verification. Use supplied live ticket context; never invent data or claim to have changed a ticket. AI scores are estimates and staff make final decisions. Answer in the user's language." },
-          { role: "user", content: "Live CivicPulse context: " + JSON.stringify(context) + "\\n\\nUser question: " + message },
-        ], 650);
-        return json({ reply: aiReply.slice(0, 4000), mode: "ai-keyless", context: { recent_reports: context.total_recent_reports }, provider: "llmfaucet" });
-      } catch (error) {
-        console.error("Keyless AI chat unavailable; using grounded help fallback:", String(error).slice(0, 160));
       }
 
       const lower = message.toLowerCase();
@@ -570,8 +507,8 @@ Deno.serve(async (req: Request) => {
         reply = "Tickets move through Pending → Assigned → In Progress → Resolved. Residents can check the Command Center for the current queue. Staff need to upload an after-repair photo and confirm resolution; AI recommendations do not automatically close a ticket.";
       } else if (/\b(ai|artificial intelligence|model|vision|confidence|priority|analysis)\b/.test(lower)) {
         reply = AI_SERVICE_URL
-          ? "The vision-service URL is configured. If analysis is still unavailable, check the service health endpoint and confirm that OPENAI_API_KEY and VISION_API_TOKEN are configured on the vision service, and that AI_SERVICE_TOKEN matches VISION_API_TOKEN in Supabase."
-          : "AI image analysis is currently offline because AI_SERVICE_URL is not configured in the Supabase Edge Function. The service must be deployed first, then set AI_SERVICE_URL to its HTTPS base URL and set matching AI_SERVICE_TOKEN / VISION_API_TOKEN secrets. I can still help with reporting steps and recent ticket data.";
+          ? "The vision service URL is configured, but model inference may still be disabled or unverified. Check the AI health status, provider keys, external-processing policy flags, and whether a recent real inference succeeded. Reports remain available for manual review."
+          : "AI image analysis is offline because AI_SERVICE_URL is not configured in Supabase secrets. Deploy the FastAPI vision service, then set AI_SERVICE_URL and matching AI_SERVICE_TOKEN / VISION_API_TOKEN secrets. Reports remain available for manual review.";
       } else if (/\b(map|location|latitude|longitude|where)\b/.test(lower)) {
         reply = "On the Citizen Report page, tap the map to place a pin or use the location search. Confirm the marker is at the actual issue location before submitting; the Command Center map shows reports with valid saved coordinates.";
       }
