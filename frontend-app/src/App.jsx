@@ -1244,7 +1244,18 @@ function CommandCenterPage() {
                     {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'In Progress')}>Start work →</button>}
                     {status === 'In Progress' && (
                       <label className="card-action" style={{ display: 'block', cursor: 'pointer' }}>
-                        <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) resolveTicket(ticket._id || ticket.id, file); event.target.value = ''; }} />
+                        <input type="file" accept="image/*" style={{ display: 'none' }} onChange={async (event) => {
+                          const input = event.currentTarget;
+                          const file = input.files?.[0];
+                          input.value = '';
+                          if (!file) return;
+                          try {
+                            const prepared = await prepareImageForUpload(file);
+                            await resolveTicket(ticket._id || ticket.id, prepared);
+                          } catch (error) {
+                            setAuthMessage(error.message || 'Could not prepare the repair photo. Please choose another image.');
+                          }
+                        }} />
                         Upload after-repair photo →
                       </label>
                     )}
