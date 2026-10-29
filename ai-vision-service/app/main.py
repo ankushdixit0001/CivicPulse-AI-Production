@@ -13,6 +13,13 @@ import httpx
 import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
+from .providers import (
+    ProviderUnavailable,
+    generate_json,
+    provider_configuration,
+    task_configured,
+    task_recently_successful,
+)
 try:
     from ultralytics import YOLO
 except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
@@ -88,27 +95,13 @@ def _parse_json_content(content: str) -> Dict[str, Any]:
     return parsed
 
 
-async def _openai_vision(messages: List[Dict[str, Any]], max_tokens: int = 900) -> Dict[str, Any]:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": OPENAI_MODEL,
-                "temperature": 0,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-                "messages": messages,
-            },
-        )
-    if response.status_code >= 400:
-        # Avoid returning provider response bodies that may contain operational details.
-        raise RuntimeError(f"Vision provider returned HTTP {response.status_code}")
-    payload = response.json()
-    content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return _parse_json_content(content)
+async def _openai_vision(
+    messages: List[Dict[str, Any]],
+    max_tokens: int = 900,
+    task: str = "chat",
+) -> Dict[str, Any]:
+    """Backward-compatible name; routes to the configured, policy-permitted provider."""
+    return await generate_json(messages, max_tokens=max_tokens, task=task)
 
 
 def _quality_metrics(image_bgr: np.ndarray) -> Dict[str, Any]:
@@ -213,8 +206,8 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
             continue
     return {
         "status": "success",
-        "model": OPENAI_MODEL,
-        "model_source": "openai_vision",
+        "model": str(result.get("_model") or OPENAI_MODEL)[:120],
+        "model_source": f"{str(result.get('_provider') or 'openai')}_vision",
         "defect_type": category,
         "confidence": round(confidence, 3),
         "severity": severity,
@@ -243,7 +236,7 @@ def _fallback_analysis(requested_category: str, quality: Dict[str, Any], objects
         "damage_coverage_pct": 0,
         "summary": "Civic-defect classification is unavailable. Image quality checks completed; the selected category has not been independently verified.",
         "visible_evidence": [],
-        "recommended_action": "Review the photo and issue description manually. Configure OPENAI_API_KEY for defect-specific visual reasoning.",
+        "recommended_action": "Review the photo and issue description manually. Configure a privacy-approved AI provider to enable defect-specific visual reasoning.",
         "human_review_required": True,
         "bounding_boxes": [],
         "generic_objects": objects,
@@ -306,17 +299,45 @@ def _resolution_passes(
     )
 
 
+@app.get("/health/live")
+def liveness() -> Dict[str, Any]:
+    return {"status": "ok", "service": APP_TITLE}
+
+
 @app.get("/health")
 def healthcheck() -> Dict[str, Any]:
+    analysis_configured = task_configured("image_triage")
+    repair_configured = task_configured("repair_verification")
+    chat_configured = task_configured("chat")
+    analysis_available = task_recently_successful("image_triage")
+    repair_available = task_recently_successful("repair_verification")
+    chat_available = task_recently_successful("chat")
     return {
         "status": "ok",
         "service": APP_TITLE,
-        "version": "2.0.0",
+        "version": "3.0.0",
         "generic_detector_loaded": model is not None,
         "inference_auth_configured": bool(VISION_API_TOKEN),
-        "defect_reasoning_configured": bool(OPENAI_API_KEY),
-        "repair_verification_configured": bool(OPENAI_API_KEY),
+        "defect_reasoning_configured": analysis_configured,
+        "defect_reasoning_available": analysis_available,
+        "repair_verification_configured": repair_configured,
+        "repair_verification_available": repair_available,
+        "chat_configured": chat_configured,
+        "chat_available": chat_available,
+        "provider_state": provider_configuration(),
+        "readiness_message": (
+            "AI provider is configured but this process has not recorded a recent successful request for this task."
+            if (analysis_configured or repair_configured or chat_configured)
+            and not (analysis_available or repair_available or chat_available)
+            else None
+        ),
     }
+
+
+@app.get("/health/providers")
+def provider_health(x_civicpulse_ai_token: Optional[str] = Header(default=None)) -> Dict[str, Any]:
+    _check_token(x_civicpulse_ai_token)
+    return provider_configuration()
 
 
 @app.post("/analyze")
@@ -334,7 +355,7 @@ async def analyze_issue(
     quality = _quality_metrics(image_bgr)
     objects = _generic_objects(image_bgr)
 
-    if OPENAI_API_KEY:
+    if task_configured("image_triage"):
         prompt = (
             "You are a conservative civic-infrastructure photo triage assistant. Inspect the supplied photo for the selected category: "
             + category
@@ -350,7 +371,7 @@ async def analyze_issue(
             result = await _openai_vision([{
                 "role": "user",
                 "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": _data_url(image), "detail": "high"}}],
-            }])
+            }], task="image_triage")
             priority = _priority_from_ai(result, category)
             result.update(priority)
             normalised = _normalise_analysis(result, category, quality)
@@ -360,7 +381,7 @@ async def analyze_issue(
         except Exception as exc:
             # Do not silently turn a provider failure into a positive damage classification.
             fallback = _fallback_analysis(category, quality, objects)
-            fallback["provider_error"] = str(exc)[:160]
+            fallback["provider_error"] = exc.code if isinstance(exc, ProviderUnavailable) else "provider_error"
             return fallback
 
     return _fallback_analysis(category, quality, objects)
@@ -376,11 +397,12 @@ async def civicpulse_chat(
     question = message.strip()[:2000]
     if not question:
         raise HTTPException(status_code=400, detail="Enter a message.")
-    if not OPENAI_API_KEY:
+    if not task_configured("chat"):
         return {
             "status": "unavailable",
-            "reply": "AI chat is not configured yet. The CivicPulse help assistant can still answer common reporting questions, but generative AI requires OPENAI_API_KEY on the vision service.",
-            "reason": "OPENAI_API_KEY is not configured.",
+            "reply": "Generative CivicPulse chat is not configured or is disabled by the current data-processing policy. Common reporting guidance remains available in the application.",
+            "reason": "no_allowed_chat_provider",
+            "provider": "none",
         }
     system_prompt = (
         "You are CivicPulse AI, a concise assistant for a civic issue reporting and municipal dispatch platform. "
@@ -388,7 +410,8 @@ async def civicpulse_chat(
         "ticket status, prioritization, staff review, and repair verification. Use supplied live context when available. "
         "Never claim to have submitted or changed a report. Do not invent live ticket data, government contacts, or policy. "
         "AI image scores are triage estimates and municipal staff make final decisions. If asked about emergencies, advise contacting local emergency services. "
-        "Answer in the user's language and keep the response practical."
+        "Answer in the user's language and keep the response practical. "
+        "Return ONLY a JSON object with one string property named reply."
     )
     try:
         result = await _openai_vision([{
@@ -397,16 +420,17 @@ async def civicpulse_chat(
         }, {
             "role": "user",
             "content": "Live CivicPulse context (may be empty): " + context[:4000] + "\\n\\nUser question: " + question,
-        }], max_tokens=650)
+        }], max_tokens=650, task="chat")
         reply = result.get("reply") or result.get("answer")
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("Chat model returned no reply.")
-        return {"status": "success", "reply": reply.strip()[:4000], "model": OPENAI_MODEL}
+        return {"status": "success", "reply": reply.strip()[:4000], "model": result.get("_model"), "provider": result.get("_provider")}
     except Exception as exc:
         return {
             "status": "unavailable",
-            "reply": "I couldn't reach the AI chat model right now. You can still use the CivicPulse help assistant for reporting and ticket-workflow questions.",
-            "reason": str(exc)[:160],
+            "reply": "I couldn't reach an allowed AI chat provider. You can still use the CivicPulse reporting and ticket-workflow guidance in the application.",
+            "reason": exc.code if isinstance(exc, ProviderUnavailable) else "provider_error",
+            "provider": "none",
         }
 
 
@@ -423,14 +447,15 @@ async def verify_resolution(
     after_image, after_bgr = _load_image(after_raw)
     before_quality = _quality_metrics(before_bgr)
     after_quality = _quality_metrics(after_bgr)
-    if not OPENAI_API_KEY:
+    if not task_configured("repair_verification"):
         return {
             "status": "unavailable",
             "is_resolved": False,
             "resolution_score": 0,
             "before_image_quality": before_quality,
             "after_image_quality": after_quality,
-            "reason": "OPENAI_API_KEY is not configured; automated repair verification is disabled.",
+            "reason": "No privacy-permitted provider is configured for repair verification.",
+            "provider": "none",
             "human_review_required": True,
         }
 
@@ -452,12 +477,13 @@ async def verify_resolution(
                 {"type": "text", "text": "AFTER photo:"},
                 {"type": "image_url", "image_url": {"url": _data_url(after_image), "detail": "high"}},
             ],
-        }], max_tokens=700)
+        }], max_tokens=700, task="repair_verification")
     except Exception as exc:
         return {
             "status": "unavailable", "is_resolved": False, "resolution_score": 0,
             "before_image_quality": before_quality, "after_image_quality": after_quality,
-            "reason": str(exc)[:160], "human_review_required": True,
+            "reason": exc.code if isinstance(exc, ProviderUnavailable) else "provider_error",
+            "provider": "none", "human_review_required": True,
         }
 
     confidence = _bounded_number(result.get("confidence", 0), 0.0, 1.0)
@@ -468,6 +494,8 @@ async def verify_resolution(
     verified = _resolution_passes(result, confidence, score, before_damage, after_damage, before_quality, after_quality)
     return {
         "status": "success",
+        "provider": result.get("_provider"),
+        "model": result.get("_model"),
         "is_resolved": verified,
         "confidence": round(confidence, 3),
         "resolution_score": round(score, 2),
