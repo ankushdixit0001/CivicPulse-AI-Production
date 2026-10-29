@@ -413,7 +413,7 @@ Deno.serve(async (req: Request) => {
         const eventNote = aiPassed
           ? "Staff confirmed AI-assisted repair verification"
           : "Staff manually overrode AI verification after inspecting repair evidence";
-        await addEvent(issueId, auth.user.id, "resolved", issue.status, "Resolved", eventNote, {
+        await addEvent(issueId, auth.user.id, "resolution_verified", issue.status, "Resolved", eventNote, {
           ai_verified: aiPassed,
           manual_override: !aiPassed,
           review_note: reviewNote || null,
