@@ -70,6 +70,15 @@ class VisionNormalizationTests(unittest.TestCase):
         }, "pothole", self.quality)
         self.assertEqual(result["defect_type"], "unknown")
 
+    def test_unknown_model_category_is_not_promoted_to_requested_category(self):
+        result = main._priority_from_ai({
+            "defect_type": "invented-label",
+            "damage_coverage_pct": 50,
+            "confidence": 0.9,
+        }, "pothole")
+        self.assertEqual(result["defect_type"], "unknown")
+        self.assertEqual(result["priority_score"], 50.0)
+
     def test_sewage_safety_priority_is_critical(self):
         result = main._priority_from_ai({
             "defect_type": "sewage",
