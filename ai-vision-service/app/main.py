@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 import json
@@ -9,7 +8,6 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
-import httpx
 import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from app.provider_router import capability_health, complete_json
@@ -31,7 +29,7 @@ OPENAI_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini").strip()
 VISION_API_TOKEN = os.getenv("VISION_API_TOKEN", "").strip()
 CATEGORY_WEIGHTS = {"pothole": 1.2, "garbage": 1.1, "sewage": 1.5, "streetlight": 1.0, "unknown": 1.0}
 ALLOWED_CATEGORIES = set(CATEGORY_WEIGHTS)
-app = FastAPI(title=APP_TITLE, version="2.0.0")
+app = FastAPI(title=APP_TITLE, version="2.1.0")
 
 # COCO YOLO is used only for generic object context. It is NOT a civic-defect model.
 try:
@@ -234,7 +232,7 @@ def _fallback_analysis(requested_category: str, quality: Dict[str, Any], objects
         "damage_coverage_pct": 0,
         "summary": "Civic-defect classification is unavailable. Image quality checks completed; the selected category has not been independently verified.",
         "visible_evidence": [],
-        "recommended_action": "Review the photo and issue description manually. Configure OPENAI_API_KEY for defect-specific visual reasoning.",
+        "recommended_action": "Review the photo and issue description manually. Configure a compatible server-side vision provider for defect-specific visual reasoning.",
         "human_review_required": True,
         "bounding_boxes": [],
         "generic_objects": objects,
@@ -355,7 +353,7 @@ async def analyze_issue(
     except Exception as exc:
         # Do not silently turn a provider failure into a positive damage classification.
         fallback = _fallback_analysis(category, quality, objects)
-        fallback["provider_error"] = str(exc)[:160]
+        fallback["provider_error"] = "AI provider unavailable or returned an invalid response."
         return fallback
 
 
