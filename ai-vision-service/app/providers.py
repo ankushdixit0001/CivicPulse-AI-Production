@@ -40,12 +40,14 @@ def _enabled(name: str, default: bool = False) -> bool:
 
 
 def _priority() -> List[str]:
+    # The configured list is an allowlist and order, not just a preference.
+    # The default includes all adapters; an explicit short list disables the others.
     raw = os.getenv("AI_PROVIDER_PRIORITY", "gemini,openrouter,openai")
     values = [item.strip().lower() for item in raw.split(",") if item.strip()]
     supported = {"gemini", "openrouter", "openai"}
-    ordered = [name for name in values if name in supported]
-    for name in ("gemini", "openrouter", "openai"):
-        if name not in ordered:
+    ordered: List[str] = []
+    for name in values:
+        if name in supported and name not in ordered:
             ordered.append(name)
     return ordered
 
