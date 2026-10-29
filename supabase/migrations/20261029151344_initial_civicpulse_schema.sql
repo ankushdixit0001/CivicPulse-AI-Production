@@ -3,6 +3,7 @@
 -- in the Git repository even though its version was already recorded by Supabase.
 create schema if not exists extensions;
 create extension if not exists postgis with schema extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 do $$ begin
   create type public.civic_user_role as enum ('resident', 'staff', 'admin');
