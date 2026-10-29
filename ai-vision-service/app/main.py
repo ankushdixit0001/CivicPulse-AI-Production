@@ -202,7 +202,7 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
         "summary": str(result.get("summary", ""))[:500],
         "visible_evidence": [str(x)[:180] for x in (result.get("visible_evidence") if isinstance(result.get("visible_evidence"), list) else [])[:8] if isinstance(x, str)],
         "recommended_action": str(result.get("recommended_action", "Manual inspection recommended."))[:500],
-        "human_review_required": bool(result.get("human_review_required", confidence < 0.75 or quality["quality"] != "good")),
+        "human_review_required": bool(result.get("human_review_required", False) or confidence < 0.75 or quality["quality"] != "good"),
         "bounding_boxes": clean_boxes,
         "image_quality": quality,
         "limitations": ["AI output is an estimate; a city employee must confirm the defect and priority."],
