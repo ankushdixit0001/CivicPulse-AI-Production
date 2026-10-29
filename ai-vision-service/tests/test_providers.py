@@ -1,13 +1,16 @@
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from app.providers import (
     ProviderUnavailable,
+    _PROVIDER_STATE,
     _extract_json,
     build_gemini_payload,
     provider_configuration,
     task_configured,
+    task_recently_successful,
 )
 
 
@@ -54,6 +57,24 @@ class ProviderPayloadTests(unittest.TestCase):
 
 
 class ProviderPolicyTests(unittest.TestCase):
+
+    def test_recent_success_is_tracked_independently_for_each_task(self):
+        state = _PROVIDER_STATE["gemini"]
+        previous = dict(state)
+        try:
+            state["last_success_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            state["last_success_task"] = "chat"
+            state["last_success_by_task"] = {
+                "chat": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            }
+            self.assertTrue(task_recently_successful("chat"))
+            self.assertFalse(task_recently_successful("image_triage"))
+            state["last_success_by_task"]["image_triage"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            self.assertTrue(task_recently_successful("image_triage"))
+            self.assertTrue(task_recently_successful("chat"))
+        finally:
+            state.clear()
+            state.update(previous)
     def test_no_key_is_not_configured_and_policy_defaults_closed(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(task_configured("image_triage"))
