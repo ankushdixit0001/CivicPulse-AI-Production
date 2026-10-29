@@ -577,9 +577,13 @@ function ReportPage() {
       }
 
       const ai = result?.ticket?.ai_metadata || {};
-      const aiSummary = ai.summary || (result?.ai_status === 'success'
-        ? 'AI triage completed; staff should review the result.'
-        : 'Issue saved. AI classification is limited until the vision model is configured.');
+      const aiSummary = result?.ai_status === 'pending'
+        ? 'Photo triage is processing in the background; your report is already saved for staff review.'
+        : result?.ai_status === 'skipped_merged'
+          ? 'This was merged with a nearby existing report; the existing report remains the canonical record.'
+          : (ai.summary || (result?.ai_status === 'success'
+            ? 'AI triage completed; staff should review the result.'
+            : 'Issue saved for manual staff review because AI triage was unavailable or inconclusive.'));
       setStatus(`${result?.message || 'Ticket submitted successfully.'} AI triage: ${aiSummary}`);
       setTimeout(() => {
         window.location.href = '/command-center';
