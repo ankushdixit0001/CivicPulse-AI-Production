@@ -35,6 +35,14 @@ function formatRelativeTime(value) {
   return new Date(timestamp).toLocaleDateString();
 }
 
+function describeAiCapability(capability) {
+  if (!capability) return 'Unknown';
+  if (capability.available === true) return 'Available';
+  if (capability.status === 'unavailable') return 'Unavailable';
+  if (capability.configured === true) return 'Configured; awaiting a successful request';
+  return 'Not configured';
+}
+
 const workflow = [
   { id: '01', title: 'Snap', description: 'Citizens photograph the issue and pin its location.', icon: Camera },
   { id: '02', title: 'Score', description: 'AI detects the defect, measures coverage and assigns a 1-100 priority.', icon: Wand2 },
@@ -1128,12 +1136,15 @@ function CommandCenterPage() {
 
         {loadError && <div className="status-banner" role="alert">{loadError}</div>}
         <div className="status-banner" role="status" aria-live="polite">
-          <strong>AI vision: </strong>
-          {aiHealth?.available
-            ? (aiHealth.provider === 'llmfaucet'
-              ? 'Configured · free community AI for photo triage, chat, and repair comparison (shared capacity may be rate-limited).'
-              : (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add an AI provider key to enable defect reasoning.'))
-            : (aiHealth?.reason || 'Checking AI service configuration...')}
+          <strong>AI capability status: </strong>
+          {aiHealth?.capabilities
+            ? 'Photo triage: ' + describeAiCapability(aiHealth.capabilities.vision_analysis)
+              + ' · Help chat: ' + describeAiCapability(aiHealth.capabilities.chat)
+              + ' · Repair comparison: ' + describeAiCapability(aiHealth.capabilities.repair_verification)
+              + (aiHealth.reason ? '. ' + aiHealth.reason : '.')
+            : (aiHealth
+              ? 'AI provider health is not yet verified per capability. Reports remain available for manual review.'
+              : 'Checking AI service configuration...')}
         </div>
         {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
         {!loading && !loadError && tickets.length === 0 && <div className="status-banner">No civic reports yet. Submit a report to populate the command center.</div>}
