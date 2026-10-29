@@ -497,19 +497,24 @@ Deno.serve(async (req: Request) => {
           if (!beforeResponse.ok) throw new Error("Could not retrieve before image.");
           const beforeBlob = await beforeResponse.blob();
           if (AI_SERVICE_URL) {
-            const verifyForm = new FormData();
-            verifyForm.append("before", beforeBlob, "before.jpg");
-            verifyForm.append("after", file, file.name || "after.jpg");
-            const aiHeaders: Record<string, string> = {};
-            const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
-            if (aiToken) aiHeaders["x-civicpulse-ai-token"] = aiToken;
-            const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
-            if (!response.ok) throw new Error("AI verification service failed.");
-            verification = await response.json();
-            if (verification?.status === "success") {
-              recordAiCapability("repair_verification", "available", String(verification.provider || "vision-service"), String(verification.model || "unknown"));
-            } else {
-              recordAiCapability("repair_verification", "unavailable", undefined, undefined, "The repair comparison service returned no successful result.");
+            try {
+              const verifyForm = new FormData();
+              verifyForm.append("before", beforeBlob, "before.jpg");
+              verifyForm.append("after", file, file.name || "after.jpg");
+              const aiHeaders: Record<string, string> = {};
+              const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
+              if (aiToken) aiHeaders["x-civicpulse-ai-token"] = aiToken;
+              const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
+              if (!response.ok) throw new Error("AI verification service failed.");
+              verification = await response.json();
+              if (verification?.status === "success") {
+                recordAiCapability("repair_verification", "available", String(verification.provider || "vision-service"), String(verification.model || "unknown"));
+              } else {
+                // If the internal service has no working model, try the keyless adapter as a best-effort fallback.
+                verification = await verifyWithFreeModel(beforeBlob, file);
+              }
+            } catch {
+              verification = await verifyWithFreeModel(beforeBlob, file);
             }
           } else {
             verification = await verifyWithFreeModel(beforeBlob, file);
