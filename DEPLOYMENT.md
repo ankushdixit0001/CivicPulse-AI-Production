@@ -55,13 +55,17 @@ The `civic-issue-images` bucket is public because report and repair evidence is 
 
 The FastAPI/YOLO service is a Docker workload and should run separately from the static Vercel frontend. A Render Blueprint is included at `render.yaml`; import this repository into Render and deploy the `civicpulse-ai-vision` service. Check `/health` after deployment.
 
-Then configure the Supabase Edge Function secret with the deployed service base URL:
+During the Render Blueprint setup, supply:
+- `OPENAI_API_KEY`: an OpenAI API key with API billing enabled. ChatGPT subscriptions do not automatically include API credits.
+- `VISION_API_TOKEN`: a long random secret. Use the same value for the Supabase Edge Function secret; do not commit it.
+
+After the service deploys, check `https://YOUR-AI-SERVICE.onrender.com/health`. Then set both secrets in Supabase:
 
 ```bash
-supabase secrets set AI_SERVICE_URL=https://YOUR-AI-SERVICE.onrender.com --project-ref ccrhdrjywnaccthzyjte
+supabase secrets set AI_SERVICE_URL=https://YOUR-AI-SERVICE.onrender.com AI_SERVICE_TOKEN=YOUR_SAME_RANDOM_VISION_TOKEN --project-ref ccrhdrjywnaccthzyjte
 ```
 
-Use the real HTTPS URL supplied by your hosting provider. Do not include `/analyze` at the end. Once configured, the API calls `/analyze` for new reports and `/verify-resolution` for after-repair evidence. Until then, reports are still saved, but the API explicitly marks AI analysis as unavailable and will not auto-resolve issues.
+Replace both placeholders with the real Render URL and the exact same token entered in Render. Do not include `/analyze` at the end. Once configured, the API calls `/analyze` for new reports and `/verify-resolution` for after-repair evidence. Until then, reports are still saved, but the API explicitly marks AI analysis as unavailable. A positive AI repair assessment requires explicit staff confirmation before the ticket is closed.
 
 The current YOLO model is a general object detector, not a validated civic-damage classifier. Treat scores as assistive estimates, not ground truth.
 
