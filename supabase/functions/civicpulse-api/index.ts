@@ -304,7 +304,7 @@ async function addEvent(issueId: string, actorId: string | null, eventType: stri
 async function runBackgroundIssueAnalysis(issueId: string, file: File, requestedDefect: string, imageUrl: string) {
   try {
     const ai = await analyze(file, requestedDefect);
-    const status = ["success", "partial", "unavailable"].includes(String(ai?.status))
+    let status = ["success", "partial", "unavailable"].includes(String(ai?.status))
       ? String(ai.status)
       : "unavailable";
     const { data: current, error: readError } = await supabase
@@ -352,6 +352,7 @@ async function runBackgroundIssueAnalysis(issueId: string, file: File, requested
         nextMetadata.status = "partial";
         nextMetadata.human_review_required = true;
         nextMetadata.metadata = { ...(nextMetadata.metadata || {}), reason: "AI response did not pass server-side field validation." };
+        status = "partial";
       }
     }
 
