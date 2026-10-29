@@ -79,4 +79,5 @@ The current YOLO model is a general object detector, not a validated civic-damag
 - [ ] Deploy the Python vision container and set the Edge Function `AI_SERVICE_URL` secret.
 - [ ] Create/promote the actual admin account before staff workflow testing.
 - [ ] Perform a real end-to-end smoke test with an uploaded image, a duplicate report, comments/vote, staff status changes, and verified after-repair evidence.
-- [ ] Add rate limiting / abuse controls before broad public launch; public report intake is intentionally open.
+- [x] Database-backed report rate limit (5 reports/hour per account/IP) and image-signature validation.
+- [ ] Add stronger anti-abuse controls (such as CAPTCHA and monitoring) before broad public launch; public report intake is intentionally open.
