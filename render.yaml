@@ -17,4 +17,4 @@ services:
       - key: LLMFAUCET_MODEL
         value: auto:smart
       - key: AI_PROVIDER_ORDER
-        value: "gemini,groq,llmfaucet,openai"
+        value: "gemini,groq,openai,llmfaucet"
