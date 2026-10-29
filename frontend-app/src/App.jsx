@@ -356,6 +356,10 @@ function ReportPage() {
 
   const submitReport = async (event) => {
     event.preventDefault();
+    if (!apiBase) {
+      setStatus('Backend API is not configured. Set VITE_API_BASE_URL in Vercel project settings before submitting reports.');
+      return;
+    }
     const lat = Number(form.latitude);
     const lng = Number(form.longitude);
     if (form.latitude === '' || form.longitude === '' || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
@@ -587,6 +591,11 @@ function CommandCenterPage() {
 
   useEffect(() => {
     const loadTickets = async () => {
+      if (!apiBase) {
+        setLoadError('Backend API is not configured. Add VITE_API_BASE_URL in Vercel project settings to load live tickets.');
+        setLoading(false);
+        return;
+      }
       try {
         const response = await fetch(`${apiBase}/api/tickets`);
         const data = await response.json();
@@ -632,6 +641,10 @@ function CommandCenterPage() {
   }, [visibleTickets]);
 
   const updateStatus = async (ticketId, nextStatus) => {
+    if (!apiBase) {
+      window.alert('Backend API is not configured. Set VITE_API_BASE_URL before updating tickets.');
+      return;
+    }
     try {
       const response = await fetch(`${apiBase}/api/tickets/${ticketId}/status`, {
         method: 'PATCH',
