@@ -339,8 +339,45 @@ function LandingPage() {
   );
 }
 
+async function prepareImageForUpload(file) {
+  // Downsample large phone photos before preview, analysis, and upload.
+  if (!file || !file.type.startsWith('image/')) throw new Error('Please choose an image from your camera or gallery.');
+  if (!('createImageBitmap' in window)) {
+    if (file.size > 3 * 1024 * 1024) throw new Error('This browser cannot safely resize this large photo. Please choose a smaller image.');
+    return file;
+  }
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1280 / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Photo resizing is not supported on this device.');
+    context.drawImage(bitmap, 0, 0, width, height);
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Could not compress this photo. Please choose another image.')), 'image/jpeg', 0.76);
+    });
+    canvas.width = 0;
+    canvas.height = 0;
+    if (blob.size > 2 * 1024 * 1024) throw new Error('Photo is still too large after compression. Please choose a smaller image.');
+    const baseName = (file.name || 'civic-photo').split('.').slice(0, -1).join('.') || 'civic-photo';
+    return new File([blob], baseName + '.jpg', { type: 'image/jpeg', lastModified: Date.now() });
+  } catch (error) {
+    if (error instanceof Error && /memory|large photo|too large|not supported|compress/i.test(error.message)) throw error;
+    throw new Error('This photo could not be prepared on this device. Try a smaller image or another photo.');
+  } finally {
+    if (bitmap) bitmap.close();
+  }
+}
+
 function ReportPage() {
-  const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
+  const galleryInputRef = useRef(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const [form, setForm] = useState({ defect_type: 'pothole', latitude: '', longitude: '', landmark: '', description: '' });
   const [preview, setPreview] = useState('');
   const [status, setStatus] = useState('Ready');
@@ -351,34 +388,35 @@ function ReportPage() {
   const [locationResults, setLocationResults] = useState([]);
   const [searchingLocation, setSearchingLocation] = useState(false);
 
-  const applyCameraOrFile = (file) => {
+  const applyCameraOrFile = async (file) => {
     if (!file) return;
     setAnalysisResult(null);
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      setPreview('');
-      setStatus('Please choose a JPG, PNG, or WebP image.');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
+    setPreview('');
+    setSelectedFile(null);
+    setStatus('Preparing photo for low-memory devices…');
+    try {
+      const prepared = await prepareImageForUpload(file);
+      setSelectedFile(prepared);
+      const previewUrl = URL.createObjectURL(prepared);
+      setPreview((current) => {
+        if (current.startsWith('blob:')) URL.revokeObjectURL(current);
+        return previewUrl;
+      });
+      setStatus('Photo ready. You can run AI analysis or submit the report.');
+    } catch (error) {
+      setStatus(error.message || 'Could not prepare this photo. Please try a smaller image.');
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
+      if (galleryInputRef.current) galleryInputRef.current.value = '';
     }
-    if (file.size > 8 * 1024 * 1024) {
-      setPreview('');
-      setStatus('Image must be 8 MB or smaller.');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => setPreview(reader.result || '');
-    reader.onerror = () => setStatus('The selected image could not be read. Please try another file.');
-    reader.readAsDataURL(file);
   };
 
   const handleFileChange = (event) => {
     const file = event.target.files?.[0];
-    applyCameraOrFile(file);
+    void applyCameraOrFile(file);
   };
 
   const runAiAnalysis = async () => {
-    const file = fileInputRef.current?.files?.[0];
+    const file = selectedFile;
     if (!file) {
       setStatus('Capture or upload a JPG, PNG, or WebP photo before running AI analysis.');
       return;
@@ -496,12 +534,12 @@ function ReportPage() {
       setStatus('Describe the issue in 5–2000 characters.');
       return;
     }
-    if (!fileInputRef.current?.files?.[0]) {
+    if (!selectedFile) {
       setStatus('Please attach or capture a photo before submitting.');
       return;
     }
 
-    const file = fileInputRef.current.files[0];
+    const file = selectedFile;
     const formData = new FormData();
     formData.append('image', file);
     formData.append('defect_type', form.defect_type);
@@ -600,24 +638,19 @@ function ReportPage() {
             </div>
 
             <div className="capture-actions">
-              <button type="button" className="blue-btn" onClick={() => fileInputRef.current?.click()}>
+              <button type="button" className="blue-btn" onClick={() => cameraInputRef.current?.click()}>
                 <Camera size={18} />
-                Open Camera
+                Take Photo
               </button>
-              <button type="button" className="outline-btn" onClick={() => fileInputRef.current?.click()}>
+              <button type="button" className="outline-btn" onClick={() => galleryInputRef.current?.click()}>
                 <Upload size={18} />
-                Upload
+                Choose from Gallery
               </button>
             </div>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden-input"
-              onChange={handleFileChange}
-            />
+            <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden-input" onChange={handleFileChange} />
+            <input ref={galleryInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden-input" onChange={handleFileChange} />
+            {selectedFile && <p className="location-search-note">Selected photo: {selectedFile.name} · {(selectedFile.size / 1024).toFixed(0)} KB after compression</p>}
 
             <button type="button" className="analysis-btn" onClick={runAiAnalysis} disabled={analyzing || submitting || !preview}>
               <Sparkles size={18} />
