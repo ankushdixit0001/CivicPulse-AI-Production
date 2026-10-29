@@ -105,6 +105,32 @@ class VisionNormalizationTests(unittest.TestCase):
             main._load_image(stream.getvalue())
         self.assertEqual(raised.exception.status_code, 400)
 
+    def test_missing_service_token_fails_closed(self):
+        from unittest.mock import patch
+        with patch.object(main, "VISION_API_TOKEN", ""):
+            with self.assertRaises(HTTPException) as raised:
+                main._check_token(None)
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_wrong_service_token_is_rejected(self):
+        from unittest.mock import patch
+        with patch.object(main, "VISION_API_TOKEN", "expected-token"):
+            with self.assertRaises(HTTPException) as raised:
+                main._check_token("wrong-token")
+        self.assertEqual(raised.exception.status_code, 401)
+
+    def test_correct_service_token_is_accepted(self):
+        from unittest.mock import patch
+        with patch.object(main, "VISION_API_TOKEN", "expected-token"):
+            self.assertIsNone(main._check_token("expected-token"))
+
+    def test_valid_image_is_loaded_and_converted(self):
+        stream = BytesIO()
+        Image.new("RGB", (640, 480), "blue").save(stream, format="PNG")
+        image, bgr = main._load_image(stream.getvalue())
+        self.assertEqual(image.size, (640, 480))
+        self.assertEqual(tuple(bgr.shape), (480, 640, 3))
+
     def test_dark_low_contrast_image_is_flagged_for_review(self):
         image = Image.new("RGB", (640, 480), (0, 0, 0))
         array = __import__("numpy").asarray(image)
