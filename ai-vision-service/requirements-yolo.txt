@@ -1,0 +1,5 @@
+# Optional dependency set for generic COCO object-context experiments only.
+# Do not use these classes as civic-defect detections.
+-r requirements.txt
+ultralytics==8.2.51
+torch==2.4.1

@@ -22,13 +22,13 @@ The frontend defaults to the deployed Supabase Edge Function URL. Optional `VITE
 
 The migrations in `supabase/migrations` create the profiles, civic issues, issue events, comments, and votes schema, the PostGIS duplicate-report RPC, and the `civic-issue-images` Storage bucket. The API Edge Function is tracked at `supabase/functions/civicpulse-api/index.ts`.
 
-AI capabilities in `ai-vision-service`:
-- Image integrity/size/dimension checks and photo-quality analysis (blur, brightness, contrast, resolution).
-- OpenAI vision classification against the citizen-selected category, with conservative confidence, visible evidence, suggested action, bounding boxes, and human-review flags.
-- Generic YOLO object context is supplemental only; it is not treated as a civic-defect classifier and never fabricates a detection when no object is found.
-- Before/after repair comparison with confidence and evidence output. It cannot close a ticket by itself; a staff/admin account must explicitly confirm the AI-assisted result.
-- A live AI health endpoint is shown in the Command Center.
-- If the OpenAI key or service is unavailable, reports are still saved, but the result is clearly marked partial/unavailable and the app does not pretend a defect was detected.
+AI capabilities in `ai-vision-service` (target behavior on the architecture branch):
+- Image integrity/size/dimension checks and photo-quality analysis (blur, brightness, contrast, resolution) run locally.
+- A capability-aware provider router tries configured account-backed providers (Gemini, Groq or OpenAI, when keys are supplied) and then the keyless llmfaucet community gateway.
+- Image classification returns conservative confidence, evidence, suggested action, bounding boxes and human-review flags. Generic YOLO object context is supplemental only, not a civic-defect classifier.
+- Before/after comparison is advisory. It cannot close a ticket by itself; staff/admin must inspect the evidence and explicitly confirm or record a reasoned override.
+- Health is reported separately for chat, vision analysis and repair comparison. Configured is not the same as available; a capability stays unknown until a successful request has been observed.
+- Keyless community inference is best-effort shared capacity. When all inference providers fail, reports must still be persisted while AI output is marked partial/unavailable; no defect or repair confirmation is fabricated.
 
 Implemented API flows:
 - Public issue intake with image upload, validation, AI triage when configured, and 15-metre same-category duplicate merging.
@@ -61,19 +61,36 @@ The `civic-issue-images` bucket is public because report and repair evidence is 
 
 ## AI vision service (remaining external deployment)
 
-The FastAPI/YOLO service is a Docker workload and should run separately from the static Vercel frontend. A Render Blueprint is included at `render.yaml`; import this repository into Render and deploy the `civicpulse-ai-vision` service. Check `/health` after deployment.
+The FastAPI service is a Docker workload and runs separately from the static Vercel frontend. A Render Blueprint is included at `render.yaml`; import this repository into Render and deploy the `civicpulse-ai-vision` service. The architecture branch defaults to keyless llmfaucet inference for a no-key prototype, but that gateway's shared capacity and image routes are not guaranteed. It is not production-ready until the real smoke test below succeeds.
 
-During the Render Blueprint setup, supply:
-- `OPENAI_API_KEY`: an OpenAI API key with API billing enabled. ChatGPT subscriptions do not automatically include API credits.
-- `VISION_API_TOKEN`: a long random secret. Use the same value for the Supabase Edge Function secret; do not commit it.
+### Required setup
+- `VISION_API_TOKEN`: create a long random internal service token in the Render secret settings. Keep it private and never commit it.
+- `LLMFAUCET_ENABLED=true` and `LLMFAUCET_MODEL=auto:smart` are configured by the Blueprint as the no-key fallback.
+- Do not add an OpenAI/Gemini/Groq key unless you possess one. These are optional, server-side-only providers; a free-tier account may still require a provider-issued API key.
 
-After the service deploys, check `https://YOUR-AI-SERVICE.onrender.com/health`. Then set both secrets in Supabase:
+After the service deploys, check `https://YOUR-AI-SERVICE.onrender.com/health`. If the health payload shows a capability as `unknown`, it means configured but not yet proven by a successful request.
+
+### Connect the Edge Function
+
+Set the service URL and the **same exact secret** on Supabase:
 
 ```bash
 supabase secrets set AI_SERVICE_URL=https://YOUR-AI-SERVICE.onrender.com AI_SERVICE_TOKEN=YOUR_SAME_RANDOM_VISION_TOKEN --project-ref ccrhdrjywnaccthzyjte
 ```
 
-Replace both placeholders with the real Render URL and the exact same token entered in Render. Do not include `/analyze` at the end. Once configured, the API calls `/analyze` for new reports and `/verify-resolution` for after-repair evidence. Until then, reports are still saved, but the API explicitly marks AI analysis as unavailable. A positive AI repair assessment requires explicit staff confirmation before the ticket is closed.
+Replace both placeholders with the real service URL and exact token entered in Render. Do not include `/analyze` at the end. This configuration is server-side; no AI token belongs in Vercel or any `VITE_*` variable.
+
+### Test actual capabilities
+
+From `ai-vision-service/`, run chat first, then use a real civic image and real before/after evidence images to prove the other capabilities:
+
+```bash
+VISION_API_TOKEN='YOUR_SAME_RANDOM_VISION_TOKEN' python scripts/smoke_test.py --base-url https://YOUR-AI-SERVICE.onrender.com
+VISION_API_TOKEN='YOUR_SAME_RANDOM_VISION_TOKEN' python scripts/smoke_test.py --base-url https://YOUR-AI-SERVICE.onrender.com --image ./sample-pothole.jpg --defect-type pothole
+VISION_API_TOKEN='YOUR_SAME_RANDOM_VISION_TOKEN' python scripts/smoke_test.py --base-url https://YOUR-AI-SERVICE.onrender.com --before ./before.jpg --after ./after.jpg
+```
+
+These commands send real requests to the provider. Do not call the service ready until each capability you plan to use returns `status=success`; a chat response does not prove image or repair-comparison support. AI repair output remains advisory; a staff/admin user must explicitly confirm the final ticket resolution. The report flow must continue working when AI is unavailable.
 
 The current YOLO model is a general object detector, not a validated civic-damage classifier. Treat scores as assistive estimates, not ground truth.
 
@@ -88,7 +105,8 @@ The current YOLO model is a general object detector, not a validated civic-damag
 - [x] Supabase Edge Function deployed.
 - [x] Frontend wired to the Edge Function, with polling, Auth UI, voting/comments, staff workflow, and repair-evidence upload.
 - [x] Production frontend build completed successfully.
-- [ ] Deploy the Python vision container and set the Edge Function `AI_SERVICE_URL` secret.
+- [ ] Deploy the Python vision container and set both `AI_SERVICE_URL` and matching `AI_SERVICE_TOKEN` Edge Function secrets.
+- [ ] Pass chat smoke test and image-analysis/repair-comparison smoke tests for each enabled capability.
 - [ ] Create/promote the actual admin account before staff workflow testing.
 - [ ] Perform a real end-to-end smoke test with an uploaded image, a duplicate report, comments/vote, staff status changes, and verified after-repair evidence.
 - [x] Database-backed report rate limit (5 reports/hour per account/IP) and image-signature validation.

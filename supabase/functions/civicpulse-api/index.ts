@@ -64,14 +64,50 @@ async function currentUser(req: Request) {
 }
 async function requireStaff(req: Request) {
   const user = await currentUser(req);
-  if (!user) return { error: "Sign in with an authorized staff account.", status: 401 as const };
+  if (!user) return { ok: false as const, error: "Sign in with an authorized staff account.", status: 401 as const };
   const { data: profile, error } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
-  if (error) return { error: "Could not verify staff permissions.", status: 500 as const };
-  if (!profile || !["staff", "admin"].includes(profile.role)) return { error: "Staff or admin role is required.", status: 403 as const };
-  return { user, role: profile.role };
+  if (error) return { ok: false as const, error: "Could not verify staff permissions.", status: 500 as const };
+  if (!profile || !["staff", "admin"].includes(profile.role)) return { ok: false as const, error: "Staff or admin role is required.", status: 403 as const };
+  return { ok: true as const, user, role: profile.role };
 }
 const FREE_AI_URL = "https://api.llmfaucet.dev/v1/chat/completions";
 const FREE_AI_MODEL = "auto:smart";
+// Best-effort per-isolate observations only; no URL/configuration is treated as proof of availability.
+const aiCapabilityState: Record<string, { status: string; provider?: string; model?: string; checked_at?: string; reason?: string }> = {
+  chat: { status: "unknown", reason: "No successful chat request has been observed in this isolate." },
+  vision_analysis: { status: "unknown", reason: "No successful vision request has been observed in this isolate." },
+  repair_verification: { status: "unknown", reason: "No successful repair-comparison request has been observed in this isolate." },
+};
+function recordAiCapability(capability: string, status: string, provider: string | undefined, model: string | undefined, reason = "") {
+  if (!aiCapabilityState[capability]) return;
+  aiCapabilityState[capability] = { status, provider, model, checked_at: new Date().toISOString(), reason: reason.slice(0, 180) };
+}
+function capabilityStatus(capability: string, configured: boolean) {
+  const state = aiCapabilityState[capability];
+  const checkedAt = state.checked_at ? Date.parse(state.checked_at) : Number.NaN;
+  const recentSuccess = state.status === "available"
+    && Number.isFinite(checkedAt)
+    && Date.now() - checkedAt <= 15 * 60 * 1000;
+  const status = !configured
+    ? "unavailable"
+    : (recentSuccess ? "available" : (state.status === "unavailable" ? "unavailable" : "unknown"));
+  const reason = !configured
+    ? "No provider is configured."
+    : (recentSuccess
+      ? ""
+      : (state.status === "available"
+        ? "The last successful request is stale; this capability needs a fresh request."
+        : (state.reason || "Configured but not yet verified by a successful request.")));
+  return {
+    configured,
+    available: configured && recentSuccess,
+    status,
+    provider: state.provider || null,
+    model: state.model || null,
+    last_checked_at: state.checked_at || null,
+    reason,
+  };
+}
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
@@ -109,8 +145,18 @@ async function analyzeWithFreeModel(file: File, defectType: string) {
   ] }], 900);
   const result = parseModelJson(content);
   const categories = new Set(["pothole", "garbage", "sewage", "streetlight", "unknown"]);
-  let category = String(result.defect_type || defectType).toLowerCase();
-  if (!categories.has(category)) category = "unknown";
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Vision provider returned an invalid object.");
+  const required = ["defect_type", "confidence", "damage_coverage_pct", "safety_risk", "summary", "visible_evidence", "recommended_action", "human_review_required", "bounding_boxes"];
+  if (!required.every((key) => Object.prototype.hasOwnProperty.call(result, key))) throw new Error("Vision provider returned an incomplete schema.");
+  const rawCategory = typeof result.defect_type === "string" ? result.defect_type.toLowerCase() : "";
+  if (!categories.has(rawCategory)) throw new Error("Vision provider returned an unsupported category.");
+  if (typeof result.confidence !== "number" || !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1) throw new Error("Vision provider returned invalid confidence.");
+  if (typeof result.damage_coverage_pct !== "number" || !Number.isFinite(result.damage_coverage_pct) || result.damage_coverage_pct < 0 || result.damage_coverage_pct > 100) throw new Error("Vision provider returned invalid damage coverage.");
+  if (typeof result.safety_risk !== "boolean" || typeof result.human_review_required !== "boolean") throw new Error("Vision provider returned invalid boolean fields.");
+  if (typeof result.summary !== "string" || typeof result.recommended_action !== "string") throw new Error("Vision provider returned invalid summary/action fields.");
+  if (!Array.isArray(result.visible_evidence) || !result.visible_evidence.every((item: unknown) => typeof item === "string")) throw new Error("Vision provider returned invalid visible evidence.");
+  if (!Array.isArray(result.bounding_boxes)) throw new Error("Vision provider returned invalid bounding boxes.");
+  const category = rawCategory;
   const clamp = (value: unknown, min: number, max: number, fallback = 0) => {
     const n = Number(value);
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
@@ -129,6 +175,7 @@ async function analyzeWithFreeModel(file: File, defectType: string) {
     if (coords[2] <= coords[0] || coords[3] <= coords[1]) return null;
     return { label: String(b.label || "visible issue").slice(0, 80), confidence: clamp(b.confidence, 0, 1, confidence), bbox: coords };
   }).filter(Boolean) : [];
+  recordAiCapability("vision_analysis", "available", "llmfaucet", FREE_AI_MODEL);
   return { status: "success", model: FREE_AI_MODEL, model_source: "llmfaucet_vision", defect_type: category, confidence, severity,
     priority_score: Math.round(priority * 100) / 100, damage_coverage_pct: damage,
     summary: String(result.summary || "AI visual triage completed; staff review is required.").slice(0, 500),
@@ -149,12 +196,18 @@ async function analyze(file: File, defectType: string) {
       const response = await fetch(AI_SERVICE_URL + "/analyze", { method: "POST", headers, body: form, signal: AbortSignal.timeout(45000) });
       if (response.ok) {
         const result = await response.json();
-        if (result?.status === "success") return result;
+        if (result?.status === "success") {
+          const provider = String(result.provider || result.model_source || "vision-service");
+          const model = String(result.model || "unknown");
+          recordAiCapability("vision_analysis", "available", provider, model);
+          return result;
+        }
       }
     }
     return await analyzeWithFreeModel(file, defectType);
   } catch (error) {
-    return { status: "unavailable", defect_type: defectType, confidence: 0, severity: "LOW", priority_score: 0, damage_coverage_pct: 0, metadata: { reason: String(error).slice(0, 200) }, bounding_boxes: [], human_review_required: true };
+    recordAiCapability("vision_analysis", "unavailable", undefined, undefined, "No configured provider completed photo analysis.");
+    return { status: "unavailable", defect_type: defectType, confidence: 0, severity: "LOW", priority_score: 0, damage_coverage_pct: 0, metadata: { reason: "AI image analysis is temporarily unavailable." }, bounding_boxes: [], human_review_required: true };
   }
 }
 async function verifyWithFreeModel(before: File | Blob, after: File) {
@@ -165,11 +218,25 @@ async function verifyWithFreeModel(before: File | Blob, after: File) {
     { type: "text", text: "AFTER photo:" }, { type: "image_url", image_url: { url: afterImage, detail: "high" } },
   ] }], 700);
   const r = parseModelJson(content);
-  const confidence = Math.max(0, Math.min(1, Number(r.confidence) || 0));
-  const score = Math.max(0, Math.min(100, Number(r.resolution_score) || 0));
-  const beforeDamage = Math.max(0, Math.min(100, Number(r.before_damage_pct) || 0));
-  const afterDamage = Math.max(0, Math.min(100, Number(r.after_damage_pct) || 0));
+  if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("Repair provider returned an invalid object.");
+  const required = ["is_resolved", "confidence", "resolution_score", "before_damage_pct", "after_damage_pct", "visible_change", "evidence", "human_review_required"];
+  if (!required.every((key) => Object.prototype.hasOwnProperty.call(r, key))) throw new Error("Repair provider returned an incomplete schema.");
+  if (typeof r.is_resolved !== "boolean" || typeof r.human_review_required !== "boolean") throw new Error("Repair provider returned invalid boolean fields.");
+  const numeric = [
+    ["confidence", 0, 1], ["resolution_score", 0, 100],
+    ["before_damage_pct", 0, 100], ["after_damage_pct", 0, 100],
+  ] as const;
+  for (const [key, min, max] of numeric) {
+    const value = r[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) throw new Error("Repair provider returned an invalid numeric field.");
+  }
+  if (typeof r.visible_change !== "string" || !Array.isArray(r.evidence) || !r.evidence.every((item: unknown) => typeof item === "string")) throw new Error("Repair provider returned invalid evidence fields.");
+  const confidence = r.confidence;
+  const score = r.resolution_score;
+  const beforeDamage = r.before_damage_pct;
+  const afterDamage = r.after_damage_pct;
   const passed = r.is_resolved === true && confidence >= 0.85 && score >= 85 && beforeDamage >= 10 && afterDamage <= Math.max(5, beforeDamage * 0.2);
+  recordAiCapability("repair_verification", "available", "llmfaucet", FREE_AI_MODEL);
   return { status: "success", is_resolved: passed, confidence, resolution_score: score, before_damage_pct: beforeDamage, after_damage_pct: afterDamage,
     visible_change: String(r.visible_change || "").slice(0, 500), evidence: Array.isArray(r.evidence) ? r.evidence.filter((v: unknown) => typeof v === "string").slice(0, 8) : [],
     human_review_required: !passed, provider: "llmfaucet", limitations: ["AI verification is assistive evidence; staff must inspect and confirm the repair."] };
@@ -248,6 +315,126 @@ async function addEvent(issueId: string, actorId: string | null, eventType: stri
   if (error) console.error("Could not append issue event:", error.message);
 }
 
+async function runBackgroundIssueAnalysis(issueId: string, file: File, requestedDefect: string, imageUrl: string) {
+  try {
+    const ai = await analyze(file, requestedDefect);
+    let status = ["success", "partial", "unavailable"].includes(String(ai?.status))
+      ? String(ai.status)
+      : "unavailable";
+    const { data: current, error: readError } = await supabase
+      .from("civic_issues")
+      .select("ai_metadata,status")
+      .eq("id", issueId)
+      .maybeSingle();
+    if (readError) throw new Error("issue_metadata_read_failed");
+    if (!current) throw new Error("issue_not_found_for_ai_update");
+
+    const metadata = current.ai_metadata && typeof current.ai_metadata === "object" && !Array.isArray(current.ai_metadata)
+      ? current.ai_metadata
+      : {};
+    const nextMetadata = {
+      ...metadata,
+      ...ai,
+      image_url: imageUrl,
+      analysis_status: status,
+      analysis_updated_at: new Date().toISOString(),
+      human_review_required: true,
+    };
+    const update: Record<string, unknown> = { ai_metadata: nextMetadata };
+
+    // Only a schema-validated successful model result may update canonical triage fields.
+    // A partial result leaves the original resident-selected category and safe baseline scores.
+    if (status === "success") {
+      const inferredDefect = String(ai.defect_type || "").toLowerCase();
+      const confidence = Number(ai.confidence);
+      const priority = Number(ai.priority_score);
+      const damage = Number(ai.damage_coverage_pct);
+      if (
+        allowedDefects.has(inferredDefect) &&
+        Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 &&
+        Number.isFinite(priority) && priority >= 0 && priority <= 100 &&
+        Number.isFinite(damage) && damage >= 0 && damage <= 100 &&
+        ["LOW", "MEDIUM", "CRITICAL"].includes(String(ai.severity))
+      ) {
+        update.defect_type = inferredDefect;
+        update.confidence = confidence;
+        update.priority_score = Math.round(priority);
+        update.severity = ai.severity;
+        update.before_damage_pct = damage;
+      } else {
+        nextMetadata.analysis_status = "partial";
+        nextMetadata.status = "partial";
+        nextMetadata.human_review_required = true;
+        nextMetadata.metadata = { ...(nextMetadata.metadata || {}), reason: "AI response did not pass server-side field validation." };
+        status = "partial";
+      }
+    }
+
+    const { error: updateError } = await supabase
+      .from("civic_issues")
+      .update(update)
+      .eq("id", issueId);
+    if (updateError) throw new Error("issue_ai_update_failed");
+
+    await addEvent(
+      issueId,
+      null,
+      status === "success" ? "ai_analysis_completed" : "ai_analysis_unavailable",
+      null,
+      null,
+      status === "success" ? "AI photo triage completed; staff review is required" : "AI triage unavailable or partial; manual review is required",
+      {
+        status: nextMetadata.analysis_status || status,
+        provider: ai.provider || ai.model_source || null,
+        model: ai.model || null,
+        confidence: Number.isFinite(Number(ai.confidence)) ? Math.max(0, Math.min(1, Number(ai.confidence))) : null,
+      },
+    );
+  } catch (error) {
+    console.error("Background issue analysis failed:", error instanceof Error ? error.message : "unknown_error");
+    try {
+      const { data: current } = await supabase
+        .from("civic_issues")
+        .select("ai_metadata")
+        .eq("id", issueId)
+        .maybeSingle();
+      const metadata = current?.ai_metadata && typeof current.ai_metadata === "object" && !Array.isArray(current.ai_metadata)
+        ? current.ai_metadata
+        : {};
+      const failedMetadata = {
+        ...metadata,
+        status: "unavailable",
+        analysis_status: "unavailable",
+        analysis_updated_at: new Date().toISOString(),
+        human_review_required: true,
+        metadata: { ...(metadata.metadata || {}), reason: "AI triage did not complete. The report is saved for manual review." },
+      };
+      const { error: updateError } = await supabase
+        .from("civic_issues")
+        .update({ ai_metadata: failedMetadata })
+        .eq("id", issueId);
+      if (updateError) throw new Error("issue_ai_failure_state_update_failed");
+      await addEvent(issueId, null, "ai_analysis_unavailable", null, null,
+        "AI triage did not complete; manual review is required.", { status: "unavailable" });
+    } catch (recordError) {
+      console.error("Could not persist AI unavailable state:", recordError instanceof Error ? recordError.message : "unknown_error");
+    }
+  }
+}
+
+function scheduleBackgroundIssueAnalysis(issueId: string, file: File, requestedDefect: string, imageUrl: string) {
+  const task = runBackgroundIssueAnalysis(issueId, file, requestedDefect, imageUrl);
+  const runtime = (globalThis as typeof globalThis & {
+    EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+  }).EdgeRuntime;
+  if (runtime && typeof runtime.waitUntil === "function") {
+    runtime.waitUntil(task);
+  } else {
+    // Local runtimes may not expose EdgeRuntime; preserve best-effort behavior for development.
+    void task;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const url = new URL(req.url);
@@ -256,27 +443,73 @@ Deno.serve(async (req: Request) => {
     if (path.endsWith("/health") || path.endsWith("/api/health")) return json({ status: "ok", service: "CivicPulse API", database: "supabase", ai_configured: Boolean(AI_SERVICE_URL) });
 
     if (req.method === "GET" && (path.endsWith("/api/ai/health") || path.endsWith("/ai/health"))) {
-      if (!AI_SERVICE_URL) return json({ configured: true, available: true, repair_verification_available: true, provider: "llmfaucet", model: FREE_AI_MODEL, defect_reasoning_configured: true, repair_verification_configured: true, mode: "keyless-community-inference", note: "Free shared inference is configured; upstream availability and image support may vary." });
+      if (!AI_SERVICE_URL) {
+        const capabilities = {
+          chat: capabilityStatus("chat", true),
+          vision_analysis: capabilityStatus("vision_analysis", true),
+          repair_verification: capabilityStatus("repair_verification", true),
+        };
+        const vision = capabilities.vision_analysis;
+        const repair = capabilities.repair_verification;
+        return json({
+          configured: true,
+          status: "unknown",
+          available: vision.available,
+          repair_verification_available: repair.available,
+          provider: "llmfaucet",
+          model: FREE_AI_MODEL,
+          defect_reasoning_configured: true,
+          repair_verification_configured: true,
+          capabilities,
+          mode: "keyless-community-inference",
+          reason: "Shared community inference is configured, but each capability is reported available only after a successful request in this Edge Function instance. Shared capacity and image support may vary.",
+        });
+      }
       try {
         const headers: Record<string, string> = {};
         const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
         if (aiToken) headers["x-civicpulse-ai-token"] = aiToken;
         const response = await fetch(`${AI_SERVICE_URL}/health`, { headers, signal: AbortSignal.timeout(8000) });
-        if (!response.ok) return json({ configured: true, available: false, reason: `Vision service health check returned ${response.status}.` });
+        if (!response.ok) return json({ configured: true, available: false, status: "unavailable", reason: "Vision service health check did not succeed." });
         const health = await response.json();
+        const capabilities = health?.capabilities || {};
         const analysisConfigured = health?.defect_reasoning_configured === true && health?.inference_auth_configured === true;
         const repairConfigured = health?.repair_verification_configured === true && health?.inference_auth_configured === true;
+        const internalTokenReady = Boolean(Deno.env.get("AI_SERVICE_TOKEN")) && health?.inference_auth_configured === true;
+        const analysisAvailable = internalTokenReady && capabilities?.vision_analysis?.available === true;
+        const repairAvailable = internalTokenReady && capabilities?.repair_verification?.available === true;
+        const chatAvailable = internalTokenReady && capabilities?.chat?.available === true;
+        const capabilityView = (name: string, isConfigured: boolean) => {
+          const item = capabilities?.[name] || {};
+          const canUse = internalTokenReady && item.available === true;
+          return {
+            ...item,
+            configured: item.configured === true || isConfigured,
+            available: canUse,
+            status: canUse ? "available" : (!isConfigured || !internalTokenReady ? "unavailable" : (item.status || "unknown")),
+            reason: !internalTokenReady
+              ? "Internal AI service authentication is not configured correctly."
+              : (canUse ? "" : (item.reason || "No recent successful task request has confirmed availability.")),
+          };
+        };
+        const verifiedCapabilities = {
+          chat: capabilityView("chat", analysisConfigured),
+          vision_analysis: capabilityView("vision_analysis", analysisConfigured),
+          repair_verification: capabilityView("repair_verification", repairConfigured),
+        };
         return json({
-          configured: true,
-          available: analysisConfigured,
-          repair_verification_available: repairConfigured,
           ...health,
-          available: analysisConfigured,
-          repair_verification_available: repairConfigured,
-          ...(!analysisConfigured ? { reason: "Vision service is running, but OPENAI_API_KEY or VISION_API_TOKEN is not configured." } : {}),
+          configured: true,
+          available: verifiedCapabilities.vision_analysis.available,
+          status: verifiedCapabilities.vision_analysis.status,
+          repair_verification_available: verifiedCapabilities.repair_verification.available,
+          capabilities: verifiedCapabilities,
+          reason: verifiedCapabilities.vision_analysis.available
+            ? ""
+            : verifiedCapabilities.vision_analysis.reason,
         });
       } catch (error) {
-        return json({ configured: true, available: false, reason: String(error).slice(0, 180) });
+        return json({ configured: true, available: false, status: "unavailable", reason: "Could not reach the vision service health endpoint." });
       }
     }
 
@@ -291,7 +524,7 @@ Deno.serve(async (req: Request) => {
       if (file.size < 1 || file.size > 8 * 1024 * 1024) return fail("Image must be between 1 byte and 8 MB.");
       if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase())) return fail("Upload a JPG, PNG, or WebP photo.");
       const analysis = await analyze(file, defect);
-      const available = analysis.status === "success" && ["openai_vision", "llmfaucet_vision"].includes(analysis.model_source);
+      const available = analysis.status === "success" && ["openai_vision", "gemini_vision", "groq_vision", "llmfaucet_vision"].includes(analysis.model_source);
       return json({
         available,
         analysis,
@@ -328,27 +561,55 @@ Deno.serve(async (req: Request) => {
       if (landmark.length > 200) return fail("Landmark must be 200 characters or fewer.");
       if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lng) || Math.abs(lng) > 180) return fail("Valid latitude and longitude are required.");
       const image = await uploadImage(file, "before");
-      const ai = await analyze(file, defect);
-      const normalizedDefect = allowedDefects.has(String(ai.defect_type || "").toLowerCase()) ? String(ai.defect_type).toLowerCase() : defect;
-      const severity = ["LOW", "MEDIUM", "CRITICAL"].includes(ai.severity) ? ai.severity : "LOW";
+      // Persist the civic report immediately; generative inference must not gate issue creation.
+      const pendingAnalysis = {
+        status: "pending",
+        analysis_status: "pending",
+        summary: "Report saved. Photo triage is running in the background; staff review is required.",
+        human_review_required: true,
+        image_url: image.url,
+        metadata: { reason: "AI analysis is running asynchronously." },
+      };
       const { data, error } = await supabase.rpc("submit_civic_issue", {
         p_reporter_id: user?.id || null,
-        p_defect_type: normalizedDefect,
+        p_defect_type: defect,
         p_description: description,
         p_lat: lat,
         p_lng: lng,
         p_landmark: landmark,
         p_zone: "unassigned",
-        p_priority_score: Math.round(Math.max(0, Math.min(100, Number(ai.priority_score) || 0))),
-        p_severity: severity,
-        p_confidence: Math.max(0, Math.min(1, Number(ai.confidence) || 0)),
-        p_before_damage_pct: Math.max(0, Math.min(100, Number(ai.damage_coverage_pct) || 0)),
+        p_priority_score: 0,
+        p_severity: "LOW",
+        p_confidence: 0,
+        p_before_damage_pct: 0,
         p_before_image_path: image.path,
-        p_ai_metadata: { ...ai, image_url: image.url },
+        p_ai_metadata: pendingAnalysis,
       });
-      if (error) throw new Error(error.message);
+      if (error) {
+        await supabase.storage.from("civic-issue-images").remove([image.path]).catch(() => ({ error: null }));
+        throw new Error(error.message);
+      }
+
       const ticket = normalizeIssue(data.ticket);
-      return json({ message: data.merged ? "Nearby report merged into the existing incident." : "Ticket created successfully.", ticket, merged: data.merged, ai_status: ai.status }, data.merged ? 200 : 201);
+      if (data.merged) {
+        // The merge RPC preserves the canonical issue's original photo; this upload is not attached.
+        const { error: cleanupError } = await supabase.storage.from("civic-issue-images").remove([image.path]);
+        if (cleanupError) console.error("Could not clean up duplicate report image:", cleanupError.message);
+        return json({
+          message: "Nearby report merged into the existing incident.",
+          ticket,
+          merged: true,
+          ai_status: "skipped_merged",
+        }, 200);
+      }
+
+      scheduleBackgroundIssueAnalysis(String(ticket.id || ticket._id), file, defect, image.url);
+      return json({
+        message: "Issue submitted successfully. AI photo triage is processing in the background.",
+        ticket,
+        merged: false,
+        ai_status: "pending",
+      }, 201);
     }
 
     const issueMatch = path.match(/(?:\/api)?\/tickets\/([0-9a-f-]{36})(?:\/(status|resolve\/confirm|resolve|comments|vote|events))?$/i);
@@ -391,7 +652,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "PATCH" && action === "status") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const body = await req.json();
         const nextStatus = String(body.status || "");
         if (!allowedStatuses.has(nextStatus)) return fail("Invalid ticket status.");
@@ -406,7 +667,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "POST" && action === "resolve") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const form = await req.formData();
         const file = form.get("image");
         if (!(file instanceof File)) return fail("After-repair image is required.");
@@ -421,19 +682,32 @@ Deno.serve(async (req: Request) => {
           if (!beforeResponse.ok) throw new Error("Could not retrieve before image.");
           const beforeBlob = await beforeResponse.blob();
           if (AI_SERVICE_URL) {
-            const verifyForm = new FormData();
-            verifyForm.append("before", beforeBlob, "before.jpg");
-            verifyForm.append("after", file, file.name || "after.jpg");
-            const aiHeaders: Record<string, string> = {};
-            const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
-            if (aiToken) aiHeaders["x-civicpulse-ai-token"] = aiToken;
-            const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
-            if (!response.ok) throw new Error("AI verification service failed.");
-            verification = await response.json();
+            try {
+              const verifyForm = new FormData();
+              verifyForm.append("before", beforeBlob, "before.jpg");
+              verifyForm.append("after", file, file.name || "after.jpg");
+              const aiHeaders: Record<string, string> = {};
+              const aiToken = Deno.env.get("AI_SERVICE_TOKEN");
+              if (aiToken) aiHeaders["x-civicpulse-ai-token"] = aiToken;
+              const response = await fetch(`${AI_SERVICE_URL}/verify-resolution`, { method: "POST", headers: aiHeaders, body: verifyForm, signal: AbortSignal.timeout(45000) });
+              if (!response.ok) throw new Error("AI verification service failed.");
+              verification = await response.json();
+              if (verification?.status === "success") {
+                recordAiCapability("repair_verification", "available", String(verification.provider || "vision-service"), String(verification.model || "unknown"));
+              } else {
+                // If the internal service has no working model, try the keyless adapter as a best-effort fallback.
+                verification = await verifyWithFreeModel(beforeBlob, file);
+              }
+            } catch {
+              verification = await verifyWithFreeModel(beforeBlob, file);
+            }
           } else {
             verification = await verifyWithFreeModel(beforeBlob, file);
           }
-        } catch (error) { verification = { status: "unavailable", is_resolved: false, reason: String(error).slice(0, 200), human_review_required: true }; }
+        } catch (error) {
+          recordAiCapability("repair_verification", "unavailable", undefined, undefined, "No configured provider completed repair verification.");
+          verification = { status: "unavailable", is_resolved: false, reason: "Repair verification is temporarily unavailable.", human_review_required: true };
+        }
         const update = {
           after_image_path: image.path,
           after_damage_pct: Number.isFinite(Number(verification.after_damage_pct)) ? Number(verification.after_damage_pct) : null,
@@ -447,7 +721,7 @@ Deno.serve(async (req: Request) => {
       }
       if (req.method === "POST" && action === "resolve/confirm") {
         const auth = await requireStaff(req);
-        if ("error" in auth) return fail(auth.error, auth.status);
+        if (!auth.ok) return fail(auth.error, auth.status);
         const { data: issue, error: issueError } = await supabase.from("civic_issues").select("*").eq("id", issueId).maybeSingle();
         if (issueError) throw new Error(issueError.message);
         if (!issue) return fail("Ticket not found.", 404);
@@ -535,6 +809,7 @@ Deno.serve(async (req: Request) => {
           if (response.ok) {
             const aiReply = await response.json();
             if (aiReply?.status === "success" && typeof aiReply.reply === "string" && aiReply.reply.trim()) {
+              recordAiCapability("chat", "available", String(aiReply.provider || "vision-service"), String(aiReply.model || "unknown"));
               return json({ reply: aiReply.reply, mode: "ai", context: { recent_reports: context.total_recent_reports } });
             }
           }
@@ -549,11 +824,13 @@ Deno.serve(async (req: Request) => {
           { role: "system", content: "You are CivicPulse AI, a practical civic issue reporting and municipal dispatch assistant. Help with potholes, garbage, sewage, streetlights, photo submission, map location, ticket status, prioritization and repair verification. Use supplied live ticket context; never invent data or claim to have changed a ticket. AI scores are estimates and staff make final decisions. Answer in the user's language." },
           { role: "user", content: "Live CivicPulse context: " + JSON.stringify(context) + "\\n\\nUser question: " + message },
         ], 650);
+        recordAiCapability("chat", "available", "llmfaucet", FREE_AI_MODEL);
         return json({ reply: aiReply.slice(0, 4000), mode: "ai-keyless", context: { recent_reports: context.total_recent_reports }, provider: "llmfaucet" });
       } catch (error) {
         console.error("Keyless AI chat unavailable; using grounded help fallback:", String(error).slice(0, 160));
       }
 
+      recordAiCapability("chat", "unavailable", undefined, undefined, "Generative chat providers failed; grounded help fallback is being used.");
       const lower = message.toLowerCase();
       let reply = "I can help with CivicPulse reporting and dispatch. You can ask how to submit a photo, choose a map location, track a ticket, understand priority, or check recent report counts.";
       let mode = "help";

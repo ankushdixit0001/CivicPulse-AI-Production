@@ -8,9 +8,13 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_VISION_MODEL
-        value: gpt-4.1-mini
+      # Required internal secret. Use the same value as Supabase AI_SERVICE_TOKEN.
       - key: VISION_API_TOKEN
         sync: false
+      # Best-effort, no-key provider for development/demo. Not a production SLA.
+      - key: LLMFAUCET_ENABLED
+        value: "true"
+      - key: LLMFAUCET_MODEL
+        value: auto:smart
+      - key: AI_PROVIDER_ORDER
+        value: "gemini,groq,openai,llmfaucet"
