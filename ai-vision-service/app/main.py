@@ -12,6 +12,7 @@ import cv2
 import httpx
 import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from app.provider_router import capability_health, complete_json
 from PIL import Image, ImageOps, UnidentifiedImageError
 try:
     from ultralytics import YOLO
@@ -88,27 +89,17 @@ def _parse_json_content(content: str) -> Dict[str, Any]:
     return parsed
 
 
-async def _openai_vision(messages: List[Dict[str, Any]], max_tokens: int = 900) -> Dict[str, Any]:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": OPENAI_MODEL,
-                "temperature": 0,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-                "messages": messages,
-            },
-        )
-    if response.status_code >= 400:
-        # Avoid returning provider response bodies that may contain operational details.
-        raise RuntimeError(f"Vision provider returned HTTP {response.status_code}")
-    payload = response.json()
-    content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-    return _parse_json_content(content)
+async def _ai_completion(
+    messages: List[Dict[str, Any]],
+    max_tokens: int = 900,
+    capability: str = "vision_analysis",
+) -> Dict[str, Any]:
+    result, provider_id, model_id = await complete_json(
+        messages=messages, max_tokens=max_tokens, capability=capability
+    )
+    result["_provider"] = provider_id
+    result["_model"] = model_id
+    return result
 
 
 def _quality_metrics(image_bgr: np.ndarray) -> Dict[str, Any]:
@@ -213,8 +204,8 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
             continue
     return {
         "status": "success",
-        "model": OPENAI_MODEL,
-        "model_source": "openai_vision",
+        "model": str(result.get("_model") or OPENAI_MODEL),
+        "model_source": str(result.get("_provider") or "openai") + "_vision",
         "defect_type": category,
         "confidence": round(confidence, 3),
         "severity": severity,
@@ -308,14 +299,19 @@ def _resolution_passes(
 
 @app.get("/health")
 def healthcheck() -> Dict[str, Any]:
+    capabilities = capability_health()
+    provider_configured = any(item["configured"] for item in capabilities.values())
     return {
         "status": "ok",
         "service": APP_TITLE,
-        "version": "2.0.0",
+        "version": "2.1.0",
         "generic_detector_loaded": model is not None,
         "inference_auth_configured": bool(VISION_API_TOKEN),
-        "defect_reasoning_configured": bool(OPENAI_API_KEY),
-        "repair_verification_configured": bool(OPENAI_API_KEY),
+        "provider_configured": provider_configured,
+        # These flags mean configured, not currently healthy. Check capabilities.*.available.
+        "defect_reasoning_configured": capabilities["vision_analysis"]["configured"],
+        "repair_verification_configured": capabilities["repair_verification"]["configured"],
+        "capabilities": capabilities,
     }
 
 
@@ -334,36 +330,34 @@ async def analyze_issue(
     quality = _quality_metrics(image_bgr)
     objects = _generic_objects(image_bgr)
 
-    if OPENAI_API_KEY:
-        prompt = (
-            "You are a conservative civic-infrastructure photo triage assistant. Inspect the supplied photo for the selected category: "
-            + category
-            + ". Do not infer damage that is not visible. If the image does not clearly show the selected category, return defect_type='unknown' "
-            "and low confidence. This is triage, not a final municipal decision. Do not use EXIF or assume location. "
-            "Return ONLY JSON with keys: defect_type (pothole|garbage|sewage|streetlight|unknown), confidence (0..1), "
-            "damage_coverage_pct (0..100), safety_risk (boolean), summary (short), visible_evidence (array of short strings), "
-            "recommended_action (short), human_review_required (boolean), bounding_boxes (array of {label,confidence,bbox}). "
-            "bbox must be [x1,y1,x2,y2] in normalized 0..1000 coordinates. Only include boxes for visible issue evidence. "
-            "priority is not supplied; compute it in the server. If uncertain, use confidence below 0.6 and require human review."
-        )
-        try:
-            result = await _openai_vision([{
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": _data_url(image), "detail": "high"}}],
-            }])
-            priority = _priority_from_ai(result, category)
-            result.update(priority)
-            normalised = _normalise_analysis(result, category, quality)
-            normalised["generic_objects"] = objects
-            normalised["image_quality"]["quality_flags"] = quality["quality_flags"]
-            return normalised
-        except Exception as exc:
-            # Do not silently turn a provider failure into a positive damage classification.
-            fallback = _fallback_analysis(category, quality, objects)
-            fallback["provider_error"] = str(exc)[:160]
-            return fallback
+    prompt = (
+        "You are a conservative civic-infrastructure photo triage assistant. Inspect the supplied photo for the selected category: "
+        + category
+        + ". Do not infer damage that is not visible. If the image does not clearly show the selected category, return defect_type='unknown' "
+        "and low confidence. This is triage, not a final municipal decision. Do not use EXIF or assume location. "
+        "Return ONLY JSON with keys: defect_type (pothole|garbage|sewage|streetlight|unknown), confidence (0..1), "
+        "damage_coverage_pct (0..100), safety_risk (boolean), summary (short), visible_evidence (array of short strings), "
+        "recommended_action (short), human_review_required (boolean), bounding_boxes (array of {label,confidence,bbox}). "
+        "bbox must be [x1,y1,x2,y2] in normalized 0..1000 coordinates. Only include boxes for visible issue evidence. "
+        "priority is not supplied; compute it in the server. If uncertain, use confidence below 0.6 and require human review."
+    )
+    try:
+        result = await _ai_completion([{
+            "role": "user",
+            "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": _data_url(image), "detail": "high"}}],
+        }], capability="vision_analysis")
+        priority = _priority_from_ai(result, category)
+        result.update(priority)
+        normalised = _normalise_analysis(result, category, quality)
+        normalised["generic_objects"] = objects
+        normalised["image_quality"]["quality_flags"] = quality["quality_flags"]
+        return normalised
+    except Exception as exc:
+        # Do not silently turn a provider failure into a positive damage classification.
+        fallback = _fallback_analysis(category, quality, objects)
+        fallback["provider_error"] = str(exc)[:160]
+        return fallback
 
-    return _fallback_analysis(category, quality, objects)
 
 
 @app.post("/chat")
@@ -376,37 +370,32 @@ async def civicpulse_chat(
     question = message.strip()[:2000]
     if not question:
         raise HTTPException(status_code=400, detail="Enter a message.")
-    if not OPENAI_API_KEY:
-        return {
-            "status": "unavailable",
-            "reply": "AI chat is not configured yet. The CivicPulse help assistant can still answer common reporting questions, but generative AI requires OPENAI_API_KEY on the vision service.",
-            "reason": "OPENAI_API_KEY is not configured.",
-        }
     system_prompt = (
         "You are CivicPulse AI, a concise assistant for a civic issue reporting and municipal dispatch platform. "
         "Help residents report potholes, garbage, sewage, and streetlight issues; explain photo submission, map location, "
         "ticket status, prioritization, staff review, and repair verification. Use supplied live context when available. "
         "Never claim to have submitted or changed a report. Do not invent live ticket data, government contacts, or policy. "
         "AI image scores are triage estimates and municipal staff make final decisions. If asked about emergencies, advise contacting local emergency services. "
-        "Answer in the user's language and keep the response practical."
+        "Answer in the user's language and keep the response practical. "
+        "Return only a JSON object with one string property named reply; do not use Markdown."
     )
     try:
-        result = await _openai_vision([{
+        result = await _ai_completion([{
             "role": "system",
             "content": system_prompt,
         }, {
             "role": "user",
             "content": "Live CivicPulse context (may be empty): " + context[:4000] + "\\n\\nUser question: " + question,
-        }], max_tokens=650)
+        }], max_tokens=650, capability="chat")
         reply = result.get("reply") or result.get("answer")
         if not isinstance(reply, str) or not reply.strip():
             raise ValueError("Chat model returned no reply.")
-        return {"status": "success", "reply": reply.strip()[:4000], "model": OPENAI_MODEL}
+        return {"status": "success", "reply": reply.strip()[:4000], "model": result.get("_model"), "provider": result.get("_provider")}
     except Exception as exc:
         return {
             "status": "unavailable",
             "reply": "I couldn't reach the AI chat model right now. You can still use the CivicPulse help assistant for reporting and ticket-workflow questions.",
-            "reason": str(exc)[:160],
+            "reason": "No configured provider completed the chat request.",
         }
 
 
@@ -423,17 +412,6 @@ async def verify_resolution(
     after_image, after_bgr = _load_image(after_raw)
     before_quality = _quality_metrics(before_bgr)
     after_quality = _quality_metrics(after_bgr)
-    if not OPENAI_API_KEY:
-        return {
-            "status": "unavailable",
-            "is_resolved": False,
-            "resolution_score": 0,
-            "before_image_quality": before_quality,
-            "after_image_quality": after_quality,
-            "reason": "OPENAI_API_KEY is not configured; automated repair verification is disabled.",
-            "human_review_required": True,
-        }
-
     prompt = (
         "Compare the BEFORE and AFTER photos of the same reported civic issue. Decide whether the visible defect is convincingly repaired. "
         "Do not infer repair merely because the images differ, camera angle/lighting changed, or the defect is not visible in the after photo. "
@@ -443,7 +421,7 @@ async def verify_resolution(
         "Only set is_resolved true when the defect appears clearly repaired and confidence >= 0.85."
     )
     try:
-        result = await _openai_vision([{
+        result = await _ai_completion([{
             "role": "user",
             "content": [
                 {"type": "text", "text": prompt},
@@ -452,12 +430,12 @@ async def verify_resolution(
                 {"type": "text", "text": "AFTER photo:"},
                 {"type": "image_url", "image_url": {"url": _data_url(after_image), "detail": "high"}},
             ],
-        }], max_tokens=700)
+        }], max_tokens=700, capability="repair_verification")
     except Exception as exc:
         return {
             "status": "unavailable", "is_resolved": False, "resolution_score": 0,
             "before_image_quality": before_quality, "after_image_quality": after_quality,
-            "reason": str(exc)[:160], "human_review_required": True,
+            "reason": "No configured provider completed repair verification.", "human_review_required": True,
         }
 
     confidence = _bounded_number(result.get("confidence", 0), 0.0, 1.0)
@@ -468,6 +446,8 @@ async def verify_resolution(
     verified = _resolution_passes(result, confidence, score, before_damage, after_damage, before_quality, after_quality)
     return {
         "status": "success",
+        "provider": result.get("_provider"),
+        "model": result.get("_model"),
         "is_resolved": verified,
         "confidence": round(confidence, 3),
         "resolution_score": round(score, 2),
