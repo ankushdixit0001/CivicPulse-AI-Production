@@ -261,10 +261,37 @@ Deno.serve(async (req: Request) => {
       const landmark = String(form.get("landmark") || "").trim();
       const lat = Number(form.get("latitude"));
       const lng = Number(form.get("longitude"));
+      const suppliedIdempotencyKey = String(form.get("idempotency_key") || "").trim();
+      const idempotencyKey = suppliedIdempotencyKey || crypto.randomUUID();
+      if (!/^[A-Za-z0-9._:-]{8,160}$/.test(idempotencyKey)) return fail("Invalid report submission key.");
       if (!allowedDefects.has(defect)) return fail("Choose a supported issue category.");
       if (description.length < 5 || description.length > 2000) return fail("Description must be between 5 and 2000 characters.");
       if (landmark.length > 200) return fail("Landmark must be 200 characters or fewer.");
       if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lng) || Math.abs(lng) > 180) return fail("Valid latitude and longitude are required.");
+
+      // Return an already accepted submission before uploading another copy of its photo.
+      const idempotencySubject = user?.id || "anonymous";
+      const { data: existingReport, error: existingReportError } = await supabase
+        .from("issue_reports")
+        .select("id,issue_id,submission_status,ai_metadata")
+        .eq("idempotency_subject", idempotencySubject)
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (existingReportError) throw new Error("Could not check report idempotency: " + existingReportError.message);
+      if (existingReport) {
+        const { data: existingIssue, error: existingIssueError } = await supabase
+          .from("civic_issues").select("*").eq("id", existingReport.issue_id).maybeSingle();
+        if (existingIssueError) throw new Error("Could not load prior report: " + existingIssueError.message);
+        if (!existingIssue) return fail("This submission was already recorded, but its ticket could not be found. Contact support.", 500);
+        return json({
+          message: "This report was already submitted.",
+          ticket: normalizeIssue(existingIssue),
+          merged: existingReport.submission_status === "merged",
+          idempotent_replay: true,
+          ai_status: existingReport.ai_metadata?.status || "unknown",
+        });
+      }
+
       const image = await uploadImage(file, "before");
       const ai = await analyze(file, defect);
       const normalizedDefect = allowedDefects.has(String(ai.defect_type || "").toLowerCase()) ? String(ai.defect_type).toLowerCase() : defect;
@@ -282,11 +309,31 @@ Deno.serve(async (req: Request) => {
         p_confidence: Math.max(0, Math.min(1, Number(ai.confidence) || 0)),
         p_before_damage_pct: Math.max(0, Math.min(100, Number(ai.damage_coverage_pct) || 0)),
         p_before_image_path: image.path,
-        p_ai_metadata: { ...ai, image_url: image.url },
+        p_ai_metadata: {
+          ...ai,
+          image_url: image.url,
+          submission_idempotency_subject: idempotencySubject,
+          submission_idempotency_key: idempotencyKey,
+          upload_bucket_id: "civic-issue-images",
+          upload_content_type: file.type.toLowerCase(),
+          upload_size_bytes: file.size,
+          upload_visibility: "public",
+        },
       });
       if (error) throw new Error(error.message);
       const ticket = normalizeIssue(data.ticket);
-      return json({ message: data.merged ? "Nearby report merged into the existing incident." : "Ticket created successfully.", ticket, merged: data.merged, ai_status: ai.status }, data.merged ? 200 : 201);
+      return json({
+        message: data.idempotent_replay
+          ? "This report was already submitted."
+          : data.merged
+            ? "Nearby report linked to the existing incident."
+            : "Ticket created successfully.",
+        ticket,
+        merged: data.merged,
+        idempotent_replay: data.idempotent_replay === true,
+        report_id: data.report_id,
+        ai_status: ai.status,
+      }, data.idempotent_replay || data.merged ? 200 : 201);
     }
 
     const issueMatch = path.match(/(?:\/api)?\/tickets\/([0-9a-f-]{36})(?:\/(status|resolve\/confirm|resolve|comments|vote|events))?$/i);
