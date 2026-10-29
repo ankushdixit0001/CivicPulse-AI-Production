@@ -56,7 +56,7 @@ class ProviderPayloadTests(unittest.TestCase):
             _extract_json('[1, 2, 3]')
 
 
-class ProviderPolicyTests(unittest.TestCase):
+class ProviderPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     def test_recent_success_is_tracked_independently_for_each_task(self):
         state = _PROVIDER_STATE["gemini"]
@@ -75,6 +75,44 @@ class ProviderPolicyTests(unittest.TestCase):
         finally:
             state.clear()
             state.update(previous)
+
+    async def test_provider_router_falls_back_after_rate_limit(self):
+        import asyncio
+        from unittest.mock import patch
+        from app.providers import generate_json
+
+        async def fake_request(provider, messages, max_tokens):
+            if provider == "gemini":
+                raise ProviderUnavailable("rate limited", "provider_rate_limited")
+            return {"reply": "grounded response", "_provider": provider, "_model": "test-model"}
+
+        with patch.dict(os.environ, {
+            "ALLOW_EXTERNAL_TEXT_AI": "true",
+            "ALLOW_OPENROUTER_TEXT_FALLBACK": "true",
+            "AI_PROVIDER_PRIORITY": "gemini,openrouter",
+            "GEMINI_API_KEY": "test-gemini-key",
+            "OPENROUTER_API_KEY": "test-openrouter-key",
+        }, clear=True):
+            with patch("app.providers._request_json", side_effect=fake_request):
+                result = await generate_json(
+                    [{"role": "user", "content": "How do I report a pothole?"}],
+                    task="chat",
+                )
+        self.assertEqual(result["_provider"], "openrouter")
+        self.assertEqual(result["reply"], "grounded response")
+
+    async def test_configured_keys_do_not_bypass_disabled_privacy_policy(self):
+        from unittest.mock import patch
+        from app.providers import generate_json
+
+        with patch.dict(os.environ, {
+            "GEMINI_API_KEY": "test-key",
+            "ALLOW_EXTERNAL_TEXT_AI": "false",
+        }, clear=True):
+            with self.assertRaises(ProviderUnavailable) as ctx:
+                await generate_json([{"role": "user", "content": "hello"}], task="chat")
+        self.assertEqual(ctx.exception.code, "external_text_ai_disabled")
+
     def test_no_key_is_not_configured_and_policy_defaults_closed(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertFalse(task_configured("image_triage"))
