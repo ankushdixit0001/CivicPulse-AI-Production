@@ -61,6 +61,11 @@ async function uploadImage(file: File, prefix: string) {
   const mime = file.type.toLowerCase();
   if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) throw new Error("Upload a JPG, PNG, or WebP image.");
   if (file.size > 8 * 1024 * 1024) throw new Error("Image must be 8 MB or smaller.");
+  const signature = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const isJpeg = mime === "image/jpeg" && signature[0] === 0xff && signature[1] === 0xd8 && signature[2] === 0xff;
+  const isPng = mime === "image/png" && signature[0] === 0x89 && signature[1] === 0x50 && signature[2] === 0x4e && signature[3] === 0x47;
+  const isWebp = mime === "image/webp" && String.fromCharCode(...signature.slice(0, 4)) === "RIFF" && String.fromCharCode(...signature.slice(8, 12)) === "WEBP";
+  if (!(isJpeg || isPng || isWebp)) throw new Error("The file contents do not match a supported image format.");
   const extension = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
   const path = `${prefix}/${crypto.randomUUID()}.${extension}`;
   const { error } = await supabase.storage.from("civic-issue-images").upload(path, file, { contentType: mime, upsert: false, cacheControl: "3600" });
