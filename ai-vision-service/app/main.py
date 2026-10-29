@@ -164,16 +164,25 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
         if not isinstance(bbox, list) or len(bbox) != 4:
             continue
         try:
-            coords = [max(0.0, min(1.0, float(value))) for value in bbox]
-            # Model prompt returns normalized 0..1000 coordinates.
-            if max(coords) > 1:
-                coords = [value / 1000.0 for value in coords]
+            # Model prompt returns coordinates on a 0..1000 scale; accept 0..1
+            # normalized coordinates too. Scale BEFORE clamping or values collapse to 1.
+            raw_coords = [float(value) for value in bbox]
+            if not all(math.isfinite(value) for value in raw_coords):
+                continue
+            if any(value < 0 or value > 1000 for value in raw_coords):
+                continue
+            if max(raw_coords) > 1:
+                raw_coords = [value / 1000.0 for value in raw_coords]
+            coords = [max(0.0, min(1.0, value)) for value in raw_coords]
+            x1, y1, x2, y2 = coords
+            if x2 <= x1 or y2 <= y1:
+                continue
             clean_boxes.append({
                 "label": str(item.get("label", "damage"))[:80],
                 "confidence": round(max(0.0, min(1.0, float(item.get("confidence", confidence)))), 3),
                 "bbox": coords,
             })
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return {
         "status": "success",
@@ -185,7 +194,7 @@ def _normalise_analysis(result: Dict[str, Any], requested_category: str, quality
         "priority_score": round(score, 2),
         "damage_coverage_pct": round(damage, 2),
         "summary": str(result.get("summary", ""))[:500],
-        "visible_evidence": [str(x)[:180] for x in result.get("visible_evidence", [])[:8] if isinstance(x, str)],
+        "visible_evidence": [str(x)[:180] for x in (result.get("visible_evidence") if isinstance(result.get("visible_evidence"), list) else [])[:8] if isinstance(x, str)],
         "recommended_action": str(result.get("recommended_action", "Manual inspection recommended."))[:500],
         "human_review_required": bool(result.get("human_review_required", confidence < 0.75 or quality["quality"] != "good")),
         "bounding_boxes": clean_boxes,
