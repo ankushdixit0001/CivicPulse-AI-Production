@@ -37,6 +37,6 @@ jobs:
           cache: npm
           cache-dependency-path: frontend-app/package-lock.json
       - name: Install frontend dependencies
-        run: cd frontend-app && npm ci
+        run: npm install --prefix frontend-app --no-audit --no-fund
       - name: Build frontend
-        run: cd frontend-app && npm run build
+        run: npm run build --prefix frontend-app
