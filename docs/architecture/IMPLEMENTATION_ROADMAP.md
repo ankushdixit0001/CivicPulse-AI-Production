@@ -78,7 +78,7 @@ Before calling a release complete:
 1. Main branch build and tests pass.
 2. Deploy FastAPI to a verified container host with VISION_API_TOKEN configured; never commit it.
 3. Configure the matching AI service URL/token through server-side secrets.
-4. Test real health, analysis, chat and repair-verification calls separately.
+4. Test real health, analysis, chat and repair-verification calls separately with `ai-vision-service/scripts/smoke_test.py`.
 5. Submit a report with AI healthy and with AI unavailable.
 6. Test duplicate merge, voting, comments, staff status transition, repair photo, explicit staff confirmation and event timeline.
 7. Review Supabase security/performance advisors and service logs.
