@@ -458,10 +458,14 @@ function ReportPage() {
         throw new Error(result.message || 'Submission failed.');
       }
 
-      setStatus(result?.message || 'Ticket submitted successfully.');
+      const ai = result?.ticket?.ai_metadata || {};
+      const aiSummary = ai.summary || (result?.ai_status === 'success'
+        ? 'AI triage completed; staff should review the result.'
+        : 'Issue saved. AI classification is limited until the vision model is configured.');
+      setStatus(`${result?.message || 'Ticket submitted successfully.'} AI triage: ${aiSummary}`);
       setTimeout(() => {
         window.location.href = '/command-center';
-      }, 900);
+      }, 2600);
     } catch (error) {
       console.error(error);
       setStatus(error.message || 'Report could not be submitted. Please check your connection and try again.');
@@ -829,8 +833,26 @@ function CommandCenterPage() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || 'Resolution evidence upload failed.');
       if (result.ticket) setTickets((current) => current.map((ticket) => (ticket._id || ticket.id) === ticketId ? { ...ticket, ...result.ticket } : ticket));
-      setAuthMessage(result.verified ? 'Repair verified and ticket resolved.' : 'Evidence saved. The ticket stays open until AI verification is available and passes.');
+      setAuthMessage(result.verified
+        ? `AI recommends resolution (score ${result.verification?.resolution_score ?? 'n/a'}). A staff member must confirm before the ticket closes.`
+        : 'Evidence saved. The ticket remains open because AI verification did not pass or is unavailable.');
     } catch (error) { setAuthMessage(error.message || 'Resolution evidence upload failed.'); }
+  };
+
+  const confirmResolution = async (ticketId) => {
+    if (!authSession?.access_token || !['staff', 'admin'].includes(profileRole)) {
+      setAuthMessage('Only signed-in staff/admin accounts can confirm a repair.');
+      return;
+    }
+    try {
+      const response = await fetch(`${apiBase}/api/tickets/${ticketId}/resolve/confirm`, {
+        method: 'POST', headers: { Authorization: `Bearer ${authSession.access_token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Resolution confirmation failed.');
+      if (result.ticket) setTickets((current) => current.map((ticket) => (ticket._id || ticket.id) === ticketId ? { ...ticket, ...result.ticket } : ticket));
+      setAuthMessage('Repair evidence confirmed by staff. Ticket resolved.');
+    } catch (error) { setAuthMessage(error.message || 'Resolution confirmation failed.'); }
   };
 
   const visibleTickets = useMemo(() => tickets.filter((ticket) =>
@@ -1034,6 +1056,18 @@ function CommandCenterPage() {
                       <span>Priority {ticket.priority_score ?? 0}</span>
                       <span>Reports {ticket.report_frequency ?? 1}</span>
                     </div>
+                    {ticket.ai_metadata && (
+                      <div className="ai-evidence-panel" style={{ marginTop: '10px', padding: '10px', borderRadius: '10px', background: 'rgba(100, 116, 139, 0.10)' }}>
+                        <strong style={{ fontSize: '12px' }}>AI triage</strong>
+                        <p style={{ fontSize: '12px', margin: '5px 0' }}>{ticket.ai_metadata.summary || (ticket.ai_metadata.status === 'partial' ? 'AI classifier unavailable; manual review required.' : 'Image triage metadata saved.')}</p>
+                        <p style={{ fontSize: '11px', margin: 0, opacity: 0.8 }}>
+                          {ticket.ai_metadata.model_source === 'openai_vision' ? `Vision confidence: ${Math.round((Number(ticket.ai_metadata.confidence) || 0) * 100)}%` : 'Unverified AI estimate'}
+                          {ticket.ai_metadata.human_review_required ? ' · Human review required' : ''}
+                        </p>
+                        {ticket.ai_metadata.image_quality?.quality_flags?.length > 0 && <p style={{ fontSize: '11px', margin: '5px 0 0' }}>Photo flags: {ticket.ai_metadata.image_quality.quality_flags.join(', ')}</p>}
+                        {ticket.ai_metadata.recommended_action && <p style={{ fontSize: '11px', margin: '5px 0 0' }}>Suggested: {ticket.ai_metadata.recommended_action}</p>}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
                       <button type="button" className="card-action" onClick={() => toggleVote(ticket._id || ticket.id)}>▲ Support ({ticket.upvote_count ?? 0})</button>
                       <button type="button" className="card-action" onClick={() => toggleComments(ticket._id || ticket.id)}>{commentsOpen[ticket._id || ticket.id] ? 'Hide comments' : 'Comments'}</button>
@@ -1054,6 +1088,11 @@ function CommandCenterPage() {
                         <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) resolveTicket(ticket._id || ticket.id, file); event.target.value = ''; }} />
                         Upload after-repair photo →
                       </label>
+                    )}
+                    {status !== 'Resolved' && ticket.ai_metadata?.resolution_verification?.is_resolved === true && (
+                      <button type="button" className="card-action" onClick={() => confirmResolution(ticket._id || ticket.id)} disabled={!['staff', 'admin'].includes(profileRole)}>
+                        Confirm AI-assisted repair →
+                      </button>
                     )}
                   </div>
                 ))}
