@@ -101,6 +101,24 @@ class ProviderPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_provider"], "openrouter")
         self.assertEqual(result["reply"], "grounded response")
 
+    async def test_explicit_provider_priority_does_not_enable_unlisted_fallbacks(self):
+        from unittest.mock import patch
+        from app.providers import generate_json, _priority
+
+        with patch.dict(os.environ, {
+            "AI_PROVIDER_PRIORITY": "gemini",
+            "GEMINI_API_KEY": "test-gemini-key",
+            "OPENROUTER_API_KEY": "test-openrouter-key",
+            "ALLOW_EXTERNAL_TEXT_AI": "true",
+            "ALLOW_OPENROUTER_TEXT_FALLBACK": "true",
+        }, clear=True):
+            self.assertEqual(_priority(), ["gemini"])
+            async def fake_request(provider, messages, max_tokens):
+                raise ProviderUnavailable("gemini unavailable", "provider_rate_limited")
+            with patch("app.providers._request_json", side_effect=fake_request):
+                with self.assertRaises(ProviderUnavailable):
+                    await generate_json([{"role": "user", "content": "hello"}], task="chat")
+
     async def test_configured_keys_do_not_bypass_disabled_privacy_policy(self):
         from unittest.mock import patch
         from app.providers import generate_json
