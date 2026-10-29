@@ -199,6 +199,17 @@ comment on table public.issue_subscriptions is 'Per-user issue status notificati
 comment on table public.notification_outbox is 'Transactional notification queue; delivery requires an explicitly configured worker/provider.';
 
 
+-- Votes are explicit user actions; report volume is tracked separately.
+-- Normalize historical counts to the actual vote table and make future tickets start at zero.
+alter table public.civic_issues alter column upvote_count set default 0;
+update public.civic_issues i
+set upvote_count = coalesce((
+  select count(*)::integer from public.issue_votes v where v.issue_id = i.id
+), 0)
+where i.upvote_count is distinct from coalesce((
+  select count(*)::integer from public.issue_votes v where v.issue_id = i.id
+), 0);
+
 -- The deployed RPC previously counted every nearby duplicate as an upvote and
 -- discarded the individual report/photo context. Replace it with an idempotent
 -- version that preserves every submission, stores media metadata, and serializes
@@ -321,7 +332,7 @@ begin
       point,
       left(coalesce(nullif(trim(p_zone), ''), 'unassigned'), 80),
       greatest(0, least(1, coalesce(p_confidence, 0))),
-      1,
+      0,
       1,
       0,
       greatest(0, least(100, coalesce(p_before_damage_pct, 0))),
