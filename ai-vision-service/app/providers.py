@@ -19,9 +19,14 @@ class ProviderUnavailable(RuntimeError):
 
 
 _PROVIDER_STATE: Dict[str, Dict[str, Any]] = {
-    "gemini": {"last_success_at": None, "last_success_task": None, "last_latency_ms": None, "last_error_code": None},
-    "openrouter": {"last_success_at": None, "last_success_task": None, "last_latency_ms": None, "last_error_code": None},
-    "openai": {"last_success_at": None, "last_success_task": None, "last_latency_ms": None, "last_error_code": None},
+    name: {
+        "last_success_at": None,
+        "last_success_task": None,
+        "last_success_by_task": {},
+        "last_latency_ms": None,
+        "last_error_code": None,
+    }
+    for name in ("gemini", "openrouter", "openai")
 }
 IMAGE_TASKS = {"image_triage", "repair_verification"}
 TEXT_TASKS = {"chat", "translation", "health_probe"}
@@ -282,11 +287,18 @@ def task_recently_successful(task: str, max_age_seconds: int = 900) -> bool:
     for name, state in _PROVIDER_STATE.items():
         if state.get("last_success_task") != task or not state.get("last_success_at"):
             continue
-        try:
-            last = datetime.fromisoformat(state["last_success_at"].replace("Z", "+00:00")).timestamp()
-        except (ValueError, TypeError):
+        timestamps = state.get("last_success_by_task") or {}
+        timestamp = timestamps.get(task)
+        if not timestamp:
+            # Compatibility with state written before per-task tracking.
+            timestamp = state.get("last_success_at") if state.get("last_success_task") == task else None
+        if not timestamp:
             continue
-        if now - last <= max_age_seconds:
+        try:
+            last = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if 0 <= now - last <= max_age_seconds:
             return True
     return False
 
@@ -312,8 +324,10 @@ async def generate_json(messages: List[Dict[str, Any]], max_tokens: int = 900, t
         try:
             result = await _request_json(provider, messages, max_tokens)
             state = _PROVIDER_STATE[provider]
-            state["last_success_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            success_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            state["last_success_at"] = success_at
             state["last_success_task"] = task
+            state.setdefault("last_success_by_task", {})[task] = success_at
             state["last_latency_ms"] = int((time.perf_counter() - started) * 1000)
             state["last_error_code"] = None
             return result
