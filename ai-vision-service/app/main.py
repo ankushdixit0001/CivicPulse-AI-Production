@@ -13,7 +13,10 @@ import httpx
 import numpy as np
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
-from ultralytics import YOLO
+try:
+    from ultralytics import YOLO
+except ImportError:  # Allows quality checks and unit tests without optional YOLO weights.
+    YOLO = None
 
 APP_TITLE = "CivicPulse AI Vision Service"
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -27,7 +30,7 @@ app = FastAPI(title=APP_TITLE, version="2.0.0")
 
 # COCO YOLO is used only for generic object context. It is NOT a civic-defect model.
 try:
-    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt"))
+    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")) if YOLO is not None else None
 except Exception:
     model = None
 
@@ -265,6 +268,7 @@ def healthcheck() -> Dict[str, Any]:
         "service": APP_TITLE,
         "version": "2.0.0",
         "generic_detector_loaded": model is not None,
+        "inference_auth_configured": bool(VISION_API_TOKEN),
         "defect_reasoning_configured": bool(OPENAI_API_KEY),
         "repair_verification_configured": bool(OPENAI_API_KEY),
     }
