@@ -675,6 +675,9 @@ function CommandCenterPage() {
   const [profileRole, setProfileRole] = useState('resident');
   const [authMessage, setAuthMessage] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+  const [commentsByIssue, setCommentsByIssue] = useState({});
+  const [commentsOpen, setCommentsOpen] = useState({});
+  const [commentDrafts, setCommentDrafts] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -742,6 +745,49 @@ function CommandCenterPage() {
     setAuthSession(null);
     setProfileRole('resident');
     setAuthMessage('Signed out.');
+  };
+
+  const toggleVote = async (ticketId) => {
+    if (!authSession?.access_token) { setAuthMessage('Sign in to support a report.'); return; }
+    try {
+      const response = await fetch(`${apiBase}/api/tickets/${ticketId}/vote`, {
+        method: 'POST', headers: { Authorization: `Bearer ${authSession.access_token}` },
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Vote could not be saved.');
+      setAuthMessage(result.voted ? 'Your support was recorded.' : 'Your support was removed.');
+      const refreshed = await fetch(`${apiBase}/api/tickets`);
+      if (refreshed.ok) setTickets(await refreshed.json());
+    } catch (error) { setAuthMessage(error.message || 'Vote could not be saved.'); }
+  };
+
+  const toggleComments = async (ticketId) => {
+    const opening = !commentsOpen[ticketId];
+    setCommentsOpen((current) => ({ ...current, [ticketId]: opening }));
+    if (!opening || commentsByIssue[ticketId]) return;
+    try {
+      const response = await fetch(`${apiBase}/api/tickets/${ticketId}/comments`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'Comments could not be loaded.');
+      setCommentsByIssue((current) => ({ ...current, [ticketId]: data }));
+    } catch (error) { setAuthMessage(error.message || 'Comments could not be loaded.'); }
+  };
+
+  const addComment = async (ticketId) => {
+    if (!authSession?.access_token) { setAuthMessage('Sign in to comment on a report.'); return; }
+    const body = String(commentDrafts[ticketId] || '').trim();
+    if (!body) return;
+    try {
+      const response = await fetch(`${apiBase}/api/tickets/${ticketId}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
+        body: JSON.stringify({ body }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Comment could not be saved.');
+      setCommentsByIssue((current) => ({ ...current, [ticketId]: [...(current[ticketId] || []), result] }));
+      setCommentDrafts((current) => ({ ...current, [ticketId]: '' }));
+    } catch (error) { setAuthMessage(error.message || 'Comment could not be saved.'); }
   };
 
   const resolveTicket = async (ticketId, file) => {
@@ -961,6 +1007,19 @@ function CommandCenterPage() {
                       <span>Priority {ticket.priority_score ?? 0}</span>
                       <span>Reports {ticket.report_frequency ?? 1}</span>
                     </div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' }}>
+                      <button type="button" className="card-action" onClick={() => toggleVote(ticket._id || ticket.id)}>▲ Support ({ticket.upvote_count ?? 0})</button>
+                      <button type="button" className="card-action" onClick={() => toggleComments(ticket._id || ticket.id)}>{commentsOpen[ticket._id || ticket.id] ? 'Hide comments' : 'Comments'}</button>
+                    </div>
+                    {commentsOpen[ticket._id || ticket.id] && (
+                      <div style={{ marginTop: '10px', display: 'grid', gap: '8px' }}>
+                        {(commentsByIssue[ticket._id || ticket.id] || []).map((comment) => (
+                          <p key={comment.id} style={{ fontSize: '12px', overflowWrap: 'anywhere' }}>{comment.body}</p>
+                        ))}
+                        <textarea rows="2" maxLength={2000} value={commentDrafts[ticket._id || ticket.id] || ''} onChange={(event) => setCommentDrafts((current) => ({ ...current, [ticket._id || ticket.id]: event.target.value }))} placeholder="Add a comment..." />
+                        <button type="button" className="card-action" onClick={() => addComment(ticket._id || ticket.id)}>Post comment</button>
+                      </div>
+                    )}
                     {status === 'Pending' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'Assigned')}>Assign ticket →</button>}
                     {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'In Progress')}>Start work →</button>}
                     {status === 'In Progress' && (
