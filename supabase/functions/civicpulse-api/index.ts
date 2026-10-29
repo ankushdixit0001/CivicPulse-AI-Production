@@ -131,8 +131,18 @@ async function analyzeWithFreeModel(file: File, defectType: string) {
   ] }], 900);
   const result = parseModelJson(content);
   const categories = new Set(["pothole", "garbage", "sewage", "streetlight", "unknown"]);
-  let category = String(result.defect_type || defectType).toLowerCase();
-  if (!categories.has(category)) category = "unknown";
+  if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Vision provider returned an invalid object.");
+  const required = ["defect_type", "confidence", "damage_coverage_pct", "safety_risk", "summary", "visible_evidence", "recommended_action", "human_review_required", "bounding_boxes"];
+  if (!required.every((key) => Object.prototype.hasOwnProperty.call(result, key))) throw new Error("Vision provider returned an incomplete schema.");
+  const rawCategory = typeof result.defect_type === "string" ? result.defect_type.toLowerCase() : "";
+  if (!categories.has(rawCategory)) throw new Error("Vision provider returned an unsupported category.");
+  if (typeof result.confidence !== "number" || !Number.isFinite(result.confidence) || result.confidence < 0 || result.confidence > 1) throw new Error("Vision provider returned invalid confidence.");
+  if (typeof result.damage_coverage_pct !== "number" || !Number.isFinite(result.damage_coverage_pct) || result.damage_coverage_pct < 0 || result.damage_coverage_pct > 100) throw new Error("Vision provider returned invalid damage coverage.");
+  if (typeof result.safety_risk !== "boolean" || typeof result.human_review_required !== "boolean") throw new Error("Vision provider returned invalid boolean fields.");
+  if (typeof result.summary !== "string" || typeof result.recommended_action !== "string") throw new Error("Vision provider returned invalid summary/action fields.");
+  if (!Array.isArray(result.visible_evidence) || !result.visible_evidence.every((item: unknown) => typeof item === "string")) throw new Error("Vision provider returned invalid visible evidence.");
+  if (!Array.isArray(result.bounding_boxes)) throw new Error("Vision provider returned invalid bounding boxes.");
+  const category = rawCategory;
   const clamp = (value: unknown, min: number, max: number, fallback = 0) => {
     const n = Number(value);
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
@@ -194,10 +204,23 @@ async function verifyWithFreeModel(before: File | Blob, after: File) {
     { type: "text", text: "AFTER photo:" }, { type: "image_url", image_url: { url: afterImage, detail: "high" } },
   ] }], 700);
   const r = parseModelJson(content);
-  const confidence = Math.max(0, Math.min(1, Number(r.confidence) || 0));
-  const score = Math.max(0, Math.min(100, Number(r.resolution_score) || 0));
-  const beforeDamage = Math.max(0, Math.min(100, Number(r.before_damage_pct) || 0));
-  const afterDamage = Math.max(0, Math.min(100, Number(r.after_damage_pct) || 0));
+  if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("Repair provider returned an invalid object.");
+  const required = ["is_resolved", "confidence", "resolution_score", "before_damage_pct", "after_damage_pct", "visible_change", "evidence", "human_review_required"];
+  if (!required.every((key) => Object.prototype.hasOwnProperty.call(r, key))) throw new Error("Repair provider returned an incomplete schema.");
+  if (typeof r.is_resolved !== "boolean" || typeof r.human_review_required !== "boolean") throw new Error("Repair provider returned invalid boolean fields.");
+  const numeric = [
+    ["confidence", 0, 1], ["resolution_score", 0, 100],
+    ["before_damage_pct", 0, 100], ["after_damage_pct", 0, 100],
+  ] as const;
+  for (const [key, min, max] of numeric) {
+    const value = r[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) throw new Error("Repair provider returned an invalid numeric field.");
+  }
+  if (typeof r.visible_change !== "string" || !Array.isArray(r.evidence) || !r.evidence.every((item: unknown) => typeof item === "string")) throw new Error("Repair provider returned invalid evidence fields.");
+  const confidence = r.confidence;
+  const score = r.resolution_score;
+  const beforeDamage = r.before_damage_pct;
+  const afterDamage = r.after_damage_pct;
   const passed = r.is_resolved === true && confidence >= 0.85 && score >= 85 && beforeDamage >= 10 && afterDamage <= Math.max(5, beforeDamage * 0.2);
   recordAiCapability("repair_verification", "available", "llmfaucet", FREE_AI_MODEL);
   return { status: "success", is_resolved: passed, confidence, resolution_score: score, before_damage_pct: beforeDamage, after_damage_pct: afterDamage,
