@@ -16,10 +16,11 @@ import {
 } from 'lucide-react';
 import { Link, NavLink, Route, Routes } from 'react-router-dom';
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
-import { io } from 'socket.io-client';
 import 'leaflet/dist/leaflet.css';
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : '')).replace(/\/+$/, '');
+const SUPABASE_URL = 'https://ccrhdrjywnaccthzyjte.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_1J0WlsyCsKVjP4XPOt_keg_kj0ZAsny';
+const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : `${SUPABASE_URL}/functions/v1/civicpulse-api`)).replace(/\/+$/, '');
 const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
 
 function formatRelativeTime(value) {
@@ -444,8 +445,11 @@ function ReportPage() {
     setStatus('Submitting issue to AI triage engine...');
 
     try {
+      let savedSession = null;
+      try { savedSession = JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { savedSession = null; }
       const response = await fetch(`${apiBase}/api/tickets/report`, {
         method: 'POST',
+        headers: savedSession?.access_token ? { Authorization: `Bearer ${savedSession.access_token}` } : {},
         body: formData,
       });
       const result = await response.json().catch(() => ({}));
@@ -662,22 +666,27 @@ function CommandCenterPage() {
   const [loadError, setLoadError] = useState('');
   const [activeFilter, setActiveFilter] = useState('All statuses');
   const [activeDefectFilter, setActiveDefectFilter] = useState('All defects');
-  const [staffToken, setStaffToken] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState('signin');
+  const [authSession, setAuthSession] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { return null; }
+  });
+  const [profileRole, setProfileRole] = useState('resident');
+  const [authMessage, setAuthMessage] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadTickets = async () => {
-      if (!apiBase) {
-        setLoadError('Backend API is not configured. Add VITE_API_BASE_URL in Vercel project settings to load live tickets.');
-        setLoading(false);
-        return;
-      }
       try {
         const response = await fetch(`${apiBase}/api/tickets`);
         const data = await response.json();
         if (!response.ok) throw new Error(data?.message || 'Unable to load tickets.');
-        if (Array.isArray(data)) setTickets(data);
-        else throw new Error('Unexpected ticket response from server.');
+        if (Array.isArray(data)) {
+          setTickets(data);
+          setLoadError('');
+        } else throw new Error('Unexpected ticket response from server.');
       } catch (error) {
         console.warn('Ticket loading failed', error);
         setLoadError(error.message || 'Unable to load tickets.');
@@ -687,12 +696,69 @@ function CommandCenterPage() {
     };
 
     loadTickets();
-    if (!apiBase) return undefined;
-    const socket = io(apiBase, { transports: ['websocket', 'polling'] });
-    socket.on('INCIDENT_CREATED', (ticket) => setTickets((current) => [ticket, ...current.filter((item) => (item._id || item.id) !== (ticket._id || ticket.id))]));
-    socket.on('INCIDENT_UPDATED', (ticket) => setTickets((current) => current.map((item) => (item._id || item.id) === (ticket._id || ticket.id) ? { ...item, ...ticket } : item)));
-    return () => socket.disconnect();
+    const refresh = window.setInterval(loadTickets, 10000);
+    return () => window.clearInterval(refresh);
   }, []);
+
+  useEffect(() => {
+    if (!authSession?.access_token) { setProfileRole('resident'); return; }
+    let cancelled = false;
+    fetch(`${apiBase}/api/me`, { headers: { Authorization: `Bearer ${authSession.access_token}` } })
+      .then((response) => response.json())
+      .then((profile) => { if (!cancelled) setProfileRole(profile.role || 'resident'); })
+      .catch(() => { if (!cancelled) setProfileRole('resident'); });
+    return () => { cancelled = true; };
+  }, [authSession]);
+
+  const authenticate = async (event) => {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthMessage('');
+    try {
+      const signup = authMode === 'signup';
+      const endpoint = signup ? `${SUPABASE_URL}/auth/v1/signup` : `${SUPABASE_URL}/auth/v1/token?grant_type=password`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authEmail.trim(), password: authPassword }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.msg || result.message || result.error_description || 'Authentication failed.');
+      if (result.access_token) {
+        localStorage.setItem('civicpulse_session', JSON.stringify(result));
+        setAuthSession(result);
+        setAuthMessage('Signed in. Your database role is ' + (result.user?.role || 'resident') + '; staff actions require the staff/admin profile role.');
+      } else {
+        setAuthMessage('Account created. If email confirmation is enabled, confirm your email and then sign in.');
+        setAuthMode('signin');
+      }
+    } catch (error) {
+      setAuthMessage(error.message || 'Could not authenticate.');
+    } finally { setAuthBusy(false); }
+  };
+
+  const signOut = () => {
+    localStorage.removeItem('civicpulse_session');
+    setAuthSession(null);
+    setProfileRole('resident');
+    setAuthMessage('Signed out.');
+  };
+
+  const resolveTicket = async (ticketId, file) => {
+    if (!file) return;
+    if (!authSession?.access_token) { setAuthMessage('Sign in with an authorized staff account before submitting repair evidence.'); return; }
+    const formData = new FormData();
+    formData.append('image', file);
+    try {
+      const response = await fetch(`${apiBase}/api/tickets/${ticketId}/resolve`, {
+        method: 'POST', headers: { Authorization: `Bearer ${authSession.access_token}` }, body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Resolution evidence upload failed.');
+      if (result.ticket) setTickets((current) => current.map((ticket) => (ticket._id || ticket.id) === ticketId ? { ...ticket, ...result.ticket } : ticket));
+      setAuthMessage(result.verified ? 'Repair verified and ticket resolved.' : 'Evidence saved. The ticket stays open until AI verification is available and passes.');
+    } catch (error) { setAuthMessage(error.message || 'Resolution evidence upload failed.'); }
+  };
 
   const visibleTickets = useMemo(() => tickets.filter((ticket) =>
     (activeFilter === 'All statuses' || ticket.status === activeFilter) &&
@@ -721,19 +787,19 @@ function CommandCenterPage() {
       window.alert('Backend API is not configured. Set VITE_API_BASE_URL before updating tickets.');
       return;
     }
-    if (!staffToken.trim()) {
-      window.alert('Enter the staff API token provided by the CivicPulse administrator to change ticket status.');
+    if (!authSession?.access_token) {
+      setAuthMessage('Sign in with an authorized staff account to change ticket status.');
       return;
     }
     try {
       const response = await fetch(`${apiBase}/api/tickets/${ticketId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + staffToken.trim() },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.access_token}` },
         body: JSON.stringify({ status: nextStatus }),
       });
       const updated = await response.json();
       if (!response.ok) throw new Error(updated.message || 'Status update failed');
-      setTickets((current) => current.map((ticket) => (ticket._id === ticketId ? { ...ticket, ...updated } : ticket)));
+      setTickets((current) => current.map((ticket) => ((ticket._id || ticket.id) === ticketId ? { ...ticket, ...updated } : ticket)));
     } catch (error) {
       console.error(error);
       window.alert(error.message || 'Status update failed. Please try again.');
@@ -793,14 +859,27 @@ function CommandCenterPage() {
                 <option>All defects</option><option value="pothole">Pothole</option><option value="garbage">Garbage</option><option value="sewage">Sewage</option><option value="streetlight">Streetlight</option><option value="unknown">Unknown</option>
               </select>
             </label>
-            <label className="staff-token-label">
-              <span>Staff workflow token</span>
-              <input className="staff-token-input" type="password" value={staffToken} onChange={(event) => setStaffToken(event.target.value)} autoComplete="off" placeholder="Required for status changes" aria-label="Staff workflow token" />
-            </label>
+            <div className="staff-token-label" style={{ minWidth: '260px', maxWidth: '360px' }}>
+              {authSession?.access_token ? (
+                <div style={{ display: 'grid', gap: '6px' }}>
+                  <span>{authSession.user?.email || 'Signed in'} · role: <strong>{profileRole}</strong></span>
+                  <button type="button" className="outline-btn" onClick={signOut}>Sign out</button>
+                </div>
+              ) : (
+                <form onSubmit={authenticate} style={{ display: 'grid', gap: '6px' }}>
+                  <span>{authMode === 'signin' ? 'Staff / resident sign in' : 'Create resident account'}</span>
+                  <input className="staff-token-input" type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" required autoComplete="email" />
+                  <input className="staff-token-input" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password (min 6 characters)" required minLength={6} autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} />
+                  <button type="submit" className="blue-btn" disabled={authBusy}>{authBusy ? 'Please wait...' : authMode === 'signin' ? 'Sign in' : 'Create account'}</button>
+                  <button type="button" className="outline-btn" onClick={() => setAuthMode((mode) => mode === 'signin' ? 'signup' : 'signin')}>{authMode === 'signin' ? 'Create account' : 'Back to sign in'}</button>
+                </form>
+              )}
+            </div>
           </div>
         </div>
 
         {loadError && <div className="status-banner" role="alert">{loadError}</div>}
+        {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
         {!loading && !loadError && tickets.length === 0 && <div className="status-banner">No civic reports yet. Submit a report to populate the command center.</div>}
         <div className="stats-grid">
           {stats.map((stat) => (
@@ -884,7 +963,12 @@ function CommandCenterPage() {
                     </div>
                     {status === 'Pending' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'Assigned')}>Assign ticket →</button>}
                     {status === 'Assigned' && <button type="button" className="card-action" onClick={() => updateStatus(ticket._id || ticket.id, 'In Progress')}>Start work →</button>}
-                    {status === 'In Progress' && <p className="card-evidence-note">Resolution requires after-repair evidence.</p>}
+                    {status === 'In Progress' && (
+                      <label className="card-action" style={{ display: 'block', cursor: 'pointer' }}>
+                        <input type="file" accept="image/jpeg,image/png,image/webp" style={{ display: 'none' }} onChange={(event) => { const file = event.target.files?.[0]; if (file) resolveTicket(ticket._id || ticket.id, file); event.target.value = ''; }} />
+                        Upload after-repair photo →
+                      </label>
+                    )}
                   </div>
                 ))}
               </div>
