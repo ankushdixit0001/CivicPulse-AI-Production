@@ -29,9 +29,6 @@ jobs:
 
   frontend-build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend-app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,6 +37,6 @@ jobs:
           cache: npm
           cache-dependency-path: frontend-app/package-lock.json
       - name: Install frontend dependencies
-        run: npm ci
+        run: cd frontend-app && npm ci
       - name: Build frontend
-        run: npm run build
+        run: cd frontend-app && npm run build
