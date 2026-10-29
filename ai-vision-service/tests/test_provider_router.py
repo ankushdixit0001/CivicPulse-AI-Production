@@ -96,6 +96,28 @@ class ProviderRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(FakeClient.calls), 2)
         self.assertTrue(provider_router.capability_health()["chat"]["available"])
 
+    async def test_incomplete_vision_json_does_not_mark_capability_available(self):
+        env = {
+            "LLMFAUCET_ENABLED": "true",
+            "AI_PROVIDER_ORDER": "llmfaucet",
+        }
+        FakeClient.responses = [
+            FakeResponse(200, {
+                "choices": [{"message": {"content": "{}"}}]
+            })
+        ]
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(provider_router.httpx, "AsyncClient", FakeClient):
+                with self.assertRaisesRegex(RuntimeError, "AI providers unavailable for vision_analysis"):
+                    await provider_router.complete_json(
+                        messages=[{"role": "user", "content": "test image"}],
+                        max_tokens=100,
+                        capability="vision_analysis",
+                    )
+        health = provider_router.capability_health()["vision_analysis"]
+        self.assertFalse(health["available"])
+        self.assertEqual(health["status"], "unavailable")
+
     async def test_all_provider_errors_return_safe_failure(self):
         env = {
             "LLMFAUCET_ENABLED": "true",
