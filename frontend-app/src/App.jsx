@@ -561,12 +561,12 @@ function ReportPage() {
               <h2>Pin the location &amp; dispatch details</h2>
             </div>
 
-            <form className="location-search" onSubmit={searchLocation}>
+            <div className="location-search">
               <label className="field-label" htmlFor="location-search-input">
                 <span>Search an address or landmark</span>
                 <div className="location-search-row">
-                  <input id="location-search-input" type="search" value={locationQuery} onChange={(event) => setLocationQuery(event.target.value)} placeholder="e.g. ABES Engineering College, Ghaziabad" maxLength={180} autoComplete="street-address" />
-                  <button type="submit" className="blue-btn" disabled={searchingLocation}>{searchingLocation ? 'Searching...' : 'Search'}</button>
+                  <input id="location-search-input" type="search" value={locationQuery} onChange={(event) => setLocationQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); searchLocation(event); } }} placeholder="e.g. ABES Engineering College, Ghaziabad" maxLength={180} autoComplete="street-address" />
+                  <button type="button" className="blue-btn" disabled={searchingLocation} onClick={searchLocation}>{searchingLocation ? 'Searching...' : 'Search'}</button>
                 </div>
               </label>
               {locationResults.length > 0 && (
@@ -579,7 +579,7 @@ function ReportPage() {
                 </div>
               )}
               <p className="location-search-note">Search is powered by OpenStreetMap. You can also tap the map to place the pin precisely.</p>
-            </form>
+            </div>
 
             <div className="map-box">
               <LocationPickerMap latitude={form.latitude} longitude={form.longitude} onLocationChange={selectMapLocation} />
