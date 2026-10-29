@@ -301,6 +301,125 @@ async function addEvent(issueId: string, actorId: string | null, eventType: stri
   if (error) console.error("Could not append issue event:", error.message);
 }
 
+async function runBackgroundIssueAnalysis(issueId: string, file: File, requestedDefect: string, imageUrl: string) {
+  try {
+    const ai = await analyze(file, requestedDefect);
+    const status = ["success", "partial", "unavailable"].includes(String(ai?.status))
+      ? String(ai.status)
+      : "unavailable";
+    const { data: current, error: readError } = await supabase
+      .from("civic_issues")
+      .select("ai_metadata,status")
+      .eq("id", issueId)
+      .maybeSingle();
+    if (readError) throw new Error("issue_metadata_read_failed");
+    if (!current) throw new Error("issue_not_found_for_ai_update");
+
+    const metadata = current.ai_metadata && typeof current.ai_metadata === "object" && !Array.isArray(current.ai_metadata)
+      ? current.ai_metadata
+      : {};
+    const nextMetadata = {
+      ...metadata,
+      ...ai,
+      image_url: imageUrl,
+      analysis_status: status,
+      analysis_updated_at: new Date().toISOString(),
+      human_review_required: true,
+    };
+    const update: Record<string, unknown> = { ai_metadata: nextMetadata };
+
+    // Only a schema-validated successful model result may update canonical triage fields.
+    // A partial result leaves the original resident-selected category and safe baseline scores.
+    if (status === "success") {
+      const inferredDefect = String(ai.defect_type || "").toLowerCase();
+      const confidence = Number(ai.confidence);
+      const priority = Number(ai.priority_score);
+      const damage = Number(ai.damage_coverage_pct);
+      if (
+        allowedDefects.has(inferredDefect) &&
+        Number.isFinite(confidence) && confidence >= 0 && confidence <= 1 &&
+        Number.isFinite(priority) && priority >= 0 && priority <= 100 &&
+        Number.isFinite(damage) && damage >= 0 && damage <= 100 &&
+        ["LOW", "MEDIUM", "CRITICAL"].includes(String(ai.severity))
+      ) {
+        update.defect_type = inferredDefect;
+        update.confidence = confidence;
+        update.priority_score = Math.round(priority);
+        update.severity = ai.severity;
+        update.before_damage_pct = damage;
+      } else {
+        nextMetadata.analysis_status = "partial";
+        nextMetadata.status = "partial";
+        nextMetadata.human_review_required = true;
+        nextMetadata.metadata = { ...(nextMetadata.metadata || {}), reason: "AI response did not pass server-side field validation." };
+      }
+    }
+
+    const { error: updateError } = await supabase
+      .from("civic_issues")
+      .update(update)
+      .eq("id", issueId);
+    if (updateError) throw new Error("issue_ai_update_failed");
+
+    await addEvent(
+      issueId,
+      null,
+      status === "success" ? "ai_analysis_completed" : "ai_analysis_unavailable",
+      null,
+      null,
+      status === "success" ? "AI photo triage completed; staff review is required" : "AI triage unavailable or partial; manual review is required",
+      {
+        status: nextMetadata.analysis_status || status,
+        provider: ai.provider || ai.model_source || null,
+        model: ai.model || null,
+        confidence: Number.isFinite(Number(ai.confidence)) ? Math.max(0, Math.min(1, Number(ai.confidence))) : null,
+      },
+    );
+  } catch (error) {
+    console.error("Background issue analysis failed:", error instanceof Error ? error.message : "unknown_error");
+    try {
+      const { data: current } = await supabase
+        .from("civic_issues")
+        .select("ai_metadata")
+        .eq("id", issueId)
+        .maybeSingle();
+      const metadata = current?.ai_metadata && typeof current.ai_metadata === "object" && !Array.isArray(current.ai_metadata)
+        ? current.ai_metadata
+        : {};
+      const failedMetadata = {
+        ...metadata,
+        status: "unavailable",
+        analysis_status: "unavailable",
+        analysis_updated_at: new Date().toISOString(),
+        human_review_required: true,
+        metadata: { ...(metadata.metadata || {}), reason: "AI triage did not complete. The report is saved for manual review." },
+      };
+      const { error: updateError } = await supabase
+        .from("civic_issues")
+        .update({ ai_metadata: failedMetadata })
+        .eq("id", issueId);
+      if (updateError) throw new Error("issue_ai_failure_state_update_failed");
+      await addEvent(issueId, null, "ai_analysis_unavailable", null, null,
+        "AI triage did not complete; manual review is required.", { status: "unavailable" });
+    } catch (recordError) {
+      console.error("Could not persist AI unavailable state:", recordError instanceof Error ? recordError.message : "unknown_error");
+    }
+  }
+}
+
+function scheduleBackgroundIssueAnalysis(issueId: string, file: File, requestedDefect: string, imageUrl: string) {
+  const task = runBackgroundIssueAnalysis(issueId, file, requestedDefect, imageUrl);
+  const runtime = (globalThis as typeof globalThis & {
+    EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+  }).EdgeRuntime;
+  if (runtime && typeof runtime.waitUntil === "function") {
+    runtime.waitUntil(task);
+  } else {
+    // Local runtimes may not expose EdgeRuntime; preserve best-effort behavior for development.
+    void task;
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const url = new URL(req.url);
@@ -427,27 +546,55 @@ Deno.serve(async (req: Request) => {
       if (landmark.length > 200) return fail("Landmark must be 200 characters or fewer.");
       if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lng) || Math.abs(lng) > 180) return fail("Valid latitude and longitude are required.");
       const image = await uploadImage(file, "before");
-      const ai = await analyze(file, defect);
-      const normalizedDefect = allowedDefects.has(String(ai.defect_type || "").toLowerCase()) ? String(ai.defect_type).toLowerCase() : defect;
-      const severity = ["LOW", "MEDIUM", "CRITICAL"].includes(ai.severity) ? ai.severity : "LOW";
+      // Persist the civic report immediately; generative inference must not gate issue creation.
+      const pendingAnalysis = {
+        status: "pending",
+        analysis_status: "pending",
+        summary: "Report saved. Photo triage is running in the background; staff review is required.",
+        human_review_required: true,
+        image_url: image.url,
+        metadata: { reason: "AI analysis is running asynchronously." },
+      };
       const { data, error } = await supabase.rpc("submit_civic_issue", {
         p_reporter_id: user?.id || null,
-        p_defect_type: normalizedDefect,
+        p_defect_type: defect,
         p_description: description,
         p_lat: lat,
         p_lng: lng,
         p_landmark: landmark,
         p_zone: "unassigned",
-        p_priority_score: Math.round(Math.max(0, Math.min(100, Number(ai.priority_score) || 0))),
-        p_severity: severity,
-        p_confidence: Math.max(0, Math.min(1, Number(ai.confidence) || 0)),
-        p_before_damage_pct: Math.max(0, Math.min(100, Number(ai.damage_coverage_pct) || 0)),
+        p_priority_score: 0,
+        p_severity: "LOW",
+        p_confidence: 0,
+        p_before_damage_pct: 0,
         p_before_image_path: image.path,
-        p_ai_metadata: { ...ai, image_url: image.url },
+        p_ai_metadata: pendingAnalysis,
       });
-      if (error) throw new Error(error.message);
+      if (error) {
+        await supabase.storage.from("civic-issue-images").remove([image.path]).catch(() => ({ error: null }));
+        throw new Error(error.message);
+      }
+
       const ticket = normalizeIssue(data.ticket);
-      return json({ message: data.merged ? "Nearby report merged into the existing incident." : "Ticket created successfully.", ticket, merged: data.merged, ai_status: ai.status }, data.merged ? 200 : 201);
+      if (data.merged) {
+        // The merge RPC preserves the canonical issue's original photo; this upload is not attached.
+        const { error: cleanupError } = await supabase.storage.from("civic-issue-images").remove([image.path]);
+        if (cleanupError) console.error("Could not clean up duplicate report image:", cleanupError.message);
+        return json({
+          message: "Nearby report merged into the existing incident.",
+          ticket,
+          merged: true,
+          ai_status: "skipped_merged",
+        }, 200);
+      }
+
+      scheduleBackgroundIssueAnalysis(String(ticket.id || ticket._id), file, defect, image.url);
+      return json({
+        message: "Issue submitted successfully. AI photo triage is processing in the background.",
+        ticket,
+        merged: false,
+        ai_status: "pending",
+      }, 201);
     }
 
     const issueMatch = path.match(/(?:\/api)?\/tickets\/([0-9a-f-]{36})(?:\/(status|resolve\/confirm|resolve|comments|vote|events))?$/i);
