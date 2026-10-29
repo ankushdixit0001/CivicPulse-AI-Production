@@ -1128,12 +1128,27 @@ function CommandCenterPage() {
 
         {loadError && <div className="status-banner" role="alert">{loadError}</div>}
         <div className="status-banner" role="status" aria-live="polite">
-          <strong>AI vision: </strong>
-          {aiHealth?.available
-            ? (aiHealth.provider === 'llmfaucet'
-              ? 'Configured · free community AI for photo triage, chat, and repair comparison (shared capacity may be rate-limited).'
-              : (aiHealth.defect_reasoning_configured ? 'Online · defect triage and repair comparison configured.' : 'Online · image-quality checks only; add an AI provider key to enable defect reasoning.'))
-            : (aiHealth?.reason || 'Checking AI service configuration...')}
+          <strong>AI capabilities: </strong>
+          {!aiHealth
+            ? 'Checking provider status...'
+            : [
+                `Photo triage: ${aiHealth.defect_reasoning_available || aiHealth.available
+                  ? 'recently succeeded'
+                  : aiHealth.defect_reasoning_configured
+                    ? 'configured; no recent successful inference is confirmed'
+                    : 'unavailable; reports can still be submitted for manual review'}`,
+                `Help chat: ${aiHealth.chat_available
+                  ? 'recently succeeded'
+                  : aiHealth.chat_configured
+                    ? 'configured; no recent successful response is confirmed'
+                    : 'using the grounded help fallback'}`,
+                `Repair comparison: ${aiHealth.repair_verification_available
+                  ? 'recently succeeded'
+                  : aiHealth.repair_verification_configured
+                    ? 'configured; no recent successful comparison is confirmed'
+                    : 'unavailable; staff must review evidence manually'}`,
+              ].join(' · ')}
+          {aiHealth?.reason && !aiHealth?.available && <span> {aiHealth.reason}</span>}
         </div>
         {authMessage && <div className="status-banner" role="status" aria-live="polite">{authMessage}</div>}
         {!loading && !loadError && tickets.length === 0 && <div className="status-banner">No civic reports yet. Submit a report to populate the command center.</div>}
