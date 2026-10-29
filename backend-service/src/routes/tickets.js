@@ -1,4 +1,5 @@
 import express from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import multer from 'multer';
 import Ticket from '../models/Ticket.js';
 import { analyzeImage } from '../services/aiClient.js';
@@ -149,7 +150,22 @@ router.post('/report', upload.single('image'), async (req, res, next) => {
   }
 });
 
-router.patch('/:id/status', async (req, res, next) => {
+const requireStaffToken = (req, res, next) => {
+  const expected = process.env.CIVICPULSE_STAFF_TOKEN;
+  if (!expected) {
+    return res.status(503).json({ message: 'Staff workflow actions are disabled until CIVICPULSE_STAFF_TOKEN is configured on the API server.' });
+  }
+  const authorization = req.get('authorization') || '';
+  const provided = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || '';
+  const expectedBytes = Buffer.from(expected);
+  const providedBytes = Buffer.from(provided);
+  if (!providedBytes.length || providedBytes.length !== expectedBytes.length || !timingSafeEqual(providedBytes, expectedBytes)) {
+    return res.status(401).json({ message: 'A valid staff token is required for workflow changes.' });
+  }
+  return next();
+};
+
+router.patch('/:id/status', requireStaffToken, async (req, res, next) => {
   try {
     const { status } = req.body || {};
     if (!allowedStatuses.has(status)) return res.status(400).json({ message: 'Invalid ticket status.' });

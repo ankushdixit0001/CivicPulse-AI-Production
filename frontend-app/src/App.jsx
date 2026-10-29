@@ -662,6 +662,7 @@ function CommandCenterPage() {
   const [loadError, setLoadError] = useState('');
   const [activeFilter, setActiveFilter] = useState('All statuses');
   const [activeDefectFilter, setActiveDefectFilter] = useState('All defects');
+  const [staffToken, setStaffToken] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -720,10 +721,14 @@ function CommandCenterPage() {
       window.alert('Backend API is not configured. Set VITE_API_BASE_URL before updating tickets.');
       return;
     }
+    if (!staffToken.trim()) {
+      window.alert('Enter the staff API token provided by the CivicPulse administrator to change ticket status.');
+      return;
+    }
     try {
       const response = await fetch(`${apiBase}/api/tickets/${ticketId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + staffToken.trim() },
         body: JSON.stringify({ status: nextStatus }),
       });
       const updated = await response.json();
@@ -787,6 +792,10 @@ function CommandCenterPage() {
               <select value={activeDefectFilter} onChange={(event) => setActiveDefectFilter(event.target.value)}>
                 <option>All defects</option><option value="pothole">Pothole</option><option value="garbage">Garbage</option><option value="sewage">Sewage</option><option value="streetlight">Streetlight</option><option value="unknown">Unknown</option>
               </select>
+            </label>
+            <label className="staff-token-label">
+              <span>Staff workflow token</span>
+              <input className="staff-token-input" type="password" value={staffToken} onChange={(event) => setStaffToken(event.target.value)} autoComplete="off" placeholder="Required for status changes" aria-label="Staff workflow token" />
             </label>
           </div>
         </div>

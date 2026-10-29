@@ -40,3 +40,12 @@ The dedicated Supabase project is `ccrhdrjywnaccthzyjte` in Mumbai (`ap-south-1`
 - Wire actual map markers and Socket.IO client subscriptions.
 - Implement a real before/after resolution workflow; never mark issues resolved from empty placeholder images.
 - Add automated API, RLS, and frontend tests; run them before promoting a production deployment.
+
+
+## Staff workflow protection
+
+Ticket status changes require the server-side `CIVICPULSE_STAFF_TOKEN` environment variable and an `Authorization: Bearer <token>` header. Set a long, random token only in the backend hosting provider's secret/environment settings. Never set it as a `VITE_*` variable or commit the real value. The command center keeps the entered token in page memory only. This is an interim shared-secret gate; before public production use, replace it with Supabase Auth and database-enforced staff/admin roles.
+
+## Database recommendation
+
+For CivicPulse, **Supabase Postgres + PostGIS is the recommended source of truth**: issue reports, assignment/status history, comments, votes and user roles are relational; PostGIS supports map bounding boxes and nearby duplicate detection; Supabase adds Auth, Realtime and private Storage. The repository currently still uses MongoDB/Mongoose in the Node API, so the Supabase migrations alone do not switch the live API over. Do not configure two databases as independent sources of truth. Complete the API migration to Supabase before treating the Supabase schema as the production database.

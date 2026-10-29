@@ -1488,3 +1488,13 @@ button {
   .location-search-row { flex-direction: column; }
   .location-search-row .blue-btn { width: 100%; }
 }
+
+
+/* Staff-only workflow control; the token is held only in component memory. */
+.staff-token-label { display: grid; gap: 4px; min-width: 210px; color: var(--muted, #94a3b8); font-size: .7rem; }
+.staff-token-input {
+  width: 100%; min-width: 0; border: 1px solid rgba(148,163,184,.35); border-radius: 9px;
+  padding: 8px 10px; background: rgba(15,23,42,.42); color: inherit; font: inherit; font-size: .78rem;
+}
+.staff-token-input:focus { outline: 2px solid rgba(59,130,246,.65); outline-offset: 1px; }
+@media (max-width: 720px) { .staff-token-label { width: 100%; min-width: 100%; } }
