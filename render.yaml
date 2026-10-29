@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: civicpulse-ai-vision
+    runtime: docker
+    plan: free
+    dockerContext: ./ai-vision-service
+    dockerfilePath: ./ai-vision-service/Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
