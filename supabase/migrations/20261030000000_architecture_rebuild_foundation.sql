@@ -228,8 +228,8 @@ declare
   found_report public.issue_reports%rowtype;
   new_report public.issue_reports%rowtype;
   merged boolean := false;
-  idempotency_key text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_key', '')), '');
-  idempotency_subject text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_subject', '')), '');
+  v_idempotency_key text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_key', '')), '');
+  v_idempotency_subject text := nullif(trim(coalesce(p_ai_metadata ->> 'submission_idempotency_subject', '')), '');
   clean_ai_metadata jsonb := coalesce(p_ai_metadata, '{}'::jsonb);
   upload_content_type text := nullif(trim(coalesce(p_ai_metadata ->> 'upload_content_type', '')), '');
   upload_bucket_id text := nullif(trim(coalesce(p_ai_metadata ->> 'upload_bucket_id', '')), '');
@@ -248,10 +248,10 @@ begin
   if upload_visibility not in ('private', 'public') then
     upload_visibility := 'private';
   end if;
-  idempotency_subject := coalesce(idempotency_subject, p_reporter_id::text, 'anonymous');
-  idempotency_key := coalesce(idempotency_key, gen_random_uuid()::text);
-  if char_length(idempotency_subject) not between 1 and 160
-     or char_length(idempotency_key) not between 8 and 160 then
+  v_idempotency_subject := coalesce(idempotency_subject, p_reporter_id::text, 'anonymous');
+  v_idempotency_key := coalesce(idempotency_key, gen_random_uuid()::text);
+  if char_length(v_idempotency_subject) not between 1 and 160
+     or char_length(v_idempotency_key) not between 8 and 160 then
     raise exception 'Invalid idempotency scope or key';
   end if;
 
@@ -263,8 +263,8 @@ begin
 
   select * into found_report
   from public.issue_reports r
-  where r.idempotency_subject = idempotency_subject
-    and r.idempotency_key = idempotency_key
+  where r.idempotency_subject = v_idempotency_subject
+    and r.idempotency_key = v_idempotency_key
   limit 1
   for update;
 
@@ -344,8 +344,8 @@ begin
     point,
     left(coalesce(p_landmark, ''), 200),
     case when merged then 'merged' else 'canonical' end,
-    idempotency_subject,
-    idempotency_key
+    v_idempotency_subject,
+    v_idempotency_key
   )
   returning * into new_report;
 
