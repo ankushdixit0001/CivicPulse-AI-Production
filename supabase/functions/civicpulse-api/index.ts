@@ -170,7 +170,7 @@ Deno.serve(async (req: Request) => {
       return json({ message: data.merged ? "Nearby report merged into the existing incident." : "Ticket created successfully.", ticket, merged: data.merged, ai_status: ai.status }, data.merged ? 200 : 201);
     }
 
-    const issueMatch = path.match(/(?:\/api)?\/tickets\/([0-9a-f-]{36})(?:\/(status|resolve|comments|vote|events))?$/i);
+    const issueMatch = path.match(/(?:\/api)?\/tickets\/([0-9a-f-]{36})(?:\/(status|resolve\/confirm|resolve|comments|vote|events))?$/i);
     if (issueMatch) {
       const [, issueId, action] = issueMatch;
       if (req.method === "GET" && action === "comments") {
@@ -256,13 +256,29 @@ Deno.serve(async (req: Request) => {
           after_damage_pct: Number.isFinite(Number(verification.after_damage_pct)) ? Number(verification.after_damage_pct) : null,
           ai_metadata: { ...(issue.ai_metadata || {}), resolution_verification: verification, after_image_url: image.url },
         };
-        if (verification.status === "success" && verification.is_resolved === true) {
-          Object.assign(update, { status: "Resolved", resolution_verified_at: new Date().toISOString(), resolved_at: new Date().toISOString() });
-        }
+        // AI can recommend resolution, but a staff member must confirm it explicitly.
         const { data, error } = await supabase.from("civic_issues").update(update).eq("id", issueId).select("*").single();
         if (error) throw new Error(error.message);
-        await addEvent(issueId, auth.user.id, "resolution_submitted", issue.status, data.status, verification.is_resolved ? "AI verification passed" : "After-repair evidence submitted; verification did not pass or is unavailable", verification);
-        return json({ ticket: normalizeIssue(data), verification, verified: verification.status === "success" && verification.is_resolved === true });
+        await addEvent(issueId, auth.user.id, "resolution_submitted", issue.status, data.status, verification.is_resolved ? "AI recommends resolution; staff confirmation is required" : "After-repair evidence submitted; verification did not pass or is unavailable", verification);
+        return json({ ticket: normalizeIssue(data), verification, verified: verification.status === "success" && verification.is_resolved === true, requires_staff_confirmation: true });
+      }
+      if (req.method === "POST" && action === "resolve/confirm") {
+        const auth = await requireStaff(req);
+        if ("error" in auth) return fail(auth.error, auth.status);
+        const { data: issue, error: issueError } = await supabase.from("civic_issues").select("*").eq("id", issueId).maybeSingle();
+        if (issueError) throw new Error(issueError.message);
+        if (!issue) return fail("Ticket not found.", 404);
+        const verification = issue.ai_metadata?.resolution_verification;
+        if (!issue.after_image_path || verification?.status !== "success" || verification?.is_resolved !== true || Number(verification?.confidence || 0) < 0.85) {
+          return fail("AI verification has not passed the required confidence threshold. Review the evidence and keep the ticket open.", 409);
+        }
+        const now = new Date().toISOString();
+        const { data, error } = await supabase.from("civic_issues").update({
+          status: "Resolved", resolution_verified_at: now, resolved_at: now, assigned_to: auth.user.id,
+        }).eq("id", issueId).select("*").single();
+        if (error) throw new Error(error.message);
+        await addEvent(issueId, auth.user.id, "resolved", issue.status, "Resolved", "Staff confirmed AI-assisted repair verification", { confidence: verification.confidence, resolution_score: verification.resolution_score });
+        return json({ ticket: normalizeIssue(data), verified: true, staff_confirmed: true });
       }
     }
 
