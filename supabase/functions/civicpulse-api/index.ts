@@ -73,6 +73,19 @@ async function uploadImage(file: File, prefix: string) {
   const { data } = supabase.storage.from("civic-issue-images").getPublicUrl(path);
   return { path, url: data.publicUrl };
 }
+async function consumeReportLimit(req: Request, userId: string | null) {
+  const forwarded = req.headers.get("cf-connecting-ip") || req.headers.get("x-real-ip") || req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const identity = userId ? `user:${userId}` : `ip:${forwarded}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+  const key = Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
+  const { data, error } = await supabase.rpc("consume_civic_report_limit", {
+    p_bucket_key: key,
+    p_limit: 5,
+    p_window_seconds: 3600,
+  });
+  if (error) throw new Error("Could not validate report rate limit: " + error.message);
+  return data === true;
+}
 async function listIssues(url: URL) {
   let query = supabase.from("civic_issues").select("*").order("created_at", { ascending: false }).limit(250);
   const status = url.searchParams.get("status");
@@ -115,6 +128,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (req.method === "POST" && (path.endsWith("/tickets/report") || path.endsWith("/api/tickets/report"))) {
+      const user = await currentUser(req);
+      if (!(await consumeReportLimit(req, user?.id || null))) return fail("Report limit reached. Try again later (maximum 5 reports per hour per account/IP).", 429);
       const form = await req.formData();
       const file = form.get("image");
       if (!(file instanceof File)) return fail("Issue image is required.");
@@ -127,7 +142,6 @@ Deno.serve(async (req: Request) => {
       if (description.length < 5 || description.length > 2000) return fail("Description must be between 5 and 2000 characters.");
       if (landmark.length > 200) return fail("Landmark must be 200 characters or fewer.");
       if (!Number.isFinite(lat) || Math.abs(lat) > 90 || !Number.isFinite(lng) || Math.abs(lng) > 180) return fail("Valid latitude and longitude are required.");
-      const user = await currentUser(req);
       const image = await uploadImage(file, "before");
       const ai = await analyze(file, defect);
       const normalizedDefect = allowedDefects.has(String(ai.defect_type || "").toLowerCase()) ? String(ai.defect_type).toLowerCase() : defect;
