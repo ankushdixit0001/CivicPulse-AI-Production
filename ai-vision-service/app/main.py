@@ -234,7 +234,7 @@ def _fallback_analysis(requested_category: str, quality: Dict[str, Any], objects
 def _priority_from_ai(result: Dict[str, Any], requested_category: str) -> Dict[str, Any]:
     category = str(result.get("defect_type", requested_category)).lower()
     if category not in ALLOWED_CATEGORIES:
-        category = requested_category
+        category = "unknown"
     damage = max(0.0, min(100.0, float(result.get("damage_coverage_pct", 0) or 0)))
     confidence = max(0.0, min(1.0, float(result.get("confidence", 0) or 0)))
     # Keep urgency separate from confidence. Never boost an issue solely because the model is confident.
