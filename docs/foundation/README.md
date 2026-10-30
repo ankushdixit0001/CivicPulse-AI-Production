@@ -19,7 +19,6 @@ Frontend:
 Edge Function secrets:
 - `SUPABASE_URL` (platform-provided)
 - `SUPABASE_SERVICE_ROLE_KEY` (server-side only)
-- `CIVICPULSE_ALLOWED_ORIGINS` (comma-separated allowlist)
 - AI secrets are intentionally not part of this foundation gate.
 
 Never prefix service-role or secret keys with `VITE_`.
