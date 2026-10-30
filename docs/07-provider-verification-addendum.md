@@ -249,3 +249,30 @@ All sources below are official provider documentation or policy pages. Prices an
 - Turnstile validation: https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
 - Firebase Cloud Messaging: https://firebase.google.com/docs/cloud-messaging/js/client
 - Resend API: https://resend.com/docs/api-reference/introduction
+
+
+## 8. Independent API documentation and public endpoint check (2026-10-30)
+
+Additional official documentation checked during the Phase 0–4 review:
+
+- Gemini image understanding: https://ai.google.dev/gemini-api/docs/image-understanding
+- Gemini rate limits: https://ai.google.dev/gemini-api/docs/rate-limits
+- Hugging Face Inference Providers pricing: https://huggingface.co/docs/inference-providers/pricing
+- Supabase Edge Function limits: https://supabase.com/docs/guides/functions/limits
+- Supabase Storage: https://supabase.com/docs/guides/storage
+- MapLibre GL JS: https://maplibre.org/maplibre-gl-js/docs/
+- Supabase pgvector: https://supabase.com/docs/guides/database/extensions/pgvector
+- OSRM HTTP API: https://project-osrm.org/docs/v5.24.0/api/
+
+### Findings
+- Gemini's official image guide documents multimodal image input for classification and visual question answering. Its rate limits are per project and model/tier-specific (RPM, input TPM, RPD); active account quotas must be inspected in AI Studio. Do not assume a fixed free quota.
+- Hugging Face's current pricing page documents a small monthly free credit for free accounts ($0.10 at the time checked, subject to change), with pay-as-you-go beyond credits. This is not an unlimited inference key.
+- Supabase Edge Functions have runtime limits; the documented hosted runtime is not suitable for CPU-heavy model inference or long-running workflows. Use Edge Functions for short orchestration and a worker/container for heavy processing.
+- Supabase Storage supports access control and resumable upload mechanisms; keep original citizen evidence private and issue scoped signed URLs.
+- MapLibre is a renderer and still requires a separately selected tile/style source.
+- OSRM documents route, nearest, table, match and trip services; public demo infrastructure must not be treated as a production SLA.
+- A public GET to https://tile.openstreetmap.org/0/0/0.png returned a valid raster image during this review. This verifies only basic public endpoint reachability at the time of test; it does not establish quota, SLA or production suitability.
+- A Nominatim sample search request could not be accessed by the research fetch environment. Its public service availability from the production region remains unverified; policy limits still apply.
+
+### Verification boundary
+No authenticated POST was made to Gemini, OpenAI, Hugging Face, Resend or FCM because the owner's credentials, active quotas, and billing settings were not available for this test. The existing LLMFaucet gateway remains unverified for contract, privacy, image capability, quota and SLA. Provider documentation checks must not be described as successful inference tests.
