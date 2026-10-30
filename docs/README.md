@@ -1,7 +1,7 @@
 # CivicPulse AI — Phase 0–4 Architecture Package
 
 **Repository:** [CivicPulse-AI-Production](https://github.com/ankushdixit0001/CivicPulse-AI-Production)  
-**Branch:** `main`  
+**Branch:** `docs/architecture-phase-0-4`  
 **Assessment date:** 2026-10-30  
 **Status:** Planning and design only. No application feature implementation or production infrastructure change is included in this package.
 
@@ -17,6 +17,7 @@
 | [04a — Transactional RPC design](./04a-database-rpc-design.sql) | Report deduplication, rate limits, vote counters and atomic resolution/event routines |
 | [05 — External API research](./05-external-api-research.md) | Official API documentation, provider fit, availability checks, constraints and recommendations |
 | [06 — Phase 0–4 scope and acceptance](./06-phase0-4-scope.md) | Phase boundaries, assumptions, decisions, open questions and exit criteria |
+| [07 — Provider alternatives](./07-provider-alternatives.md) | Task-by-task AI, embeddings, maps, routing, email, push and abuse-protection provider comparison |
 
 ## Source-of-truth decision
 
