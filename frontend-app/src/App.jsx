@@ -18,6 +18,7 @@ import { Link, NavLink, Route, Routes } from 'react-router-dom';
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { clearSession, persistSession, readStoredSession, refreshAuthSession, signInWithPassword, signOutRemote, signUp } from './lib/auth.js';
+import { validateImage, validateIssueReport } from './lib/validation.js';
 
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || 'https://ccrhdrjywnaccthzyjte.supabase.co').replace(/\/+$/, '');
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
@@ -527,18 +528,18 @@ function ReportPage() {
       setStatus('Backend API is not configured. Set VITE_API_BASE_URL in Vercel project settings before submitting reports.');
       return;
     }
-    const lat = Number(form.latitude);
-    const lng = Number(form.longitude);
-    if (form.latitude === '' || form.longitude === '' || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
-      setStatus('Select a location on the map or use My location before submitting.');
-      return;
-    }
-    if (form.description.trim().length < 5 || form.description.trim().length > 2000) {
-      setStatus('Describe the issue in 5–2000 characters.');
+    const validation = validateIssueReport(form);
+    if (!validation.valid) {
+      setStatus(Object.values(validation.errors)[0]);
       return;
     }
     if (!selectedFile) {
       setStatus('Please attach or capture a photo before submitting.');
+      return;
+    }
+    const imageValidation = validateImage(selectedFile);
+    if (!imageValidation.valid) {
+      setStatus(imageValidation.error);
       return;
     }
 
@@ -556,8 +557,7 @@ function ReportPage() {
     setStatus('Submitting issue to AI triage engine...');
 
     try {
-      let savedSession = null;
-      try { savedSession = JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { savedSession = null; }
+      const savedSession = readStoredSession();
       const response = await fetch(`${apiBase}/api/tickets/report`, {
         method: 'POST',
         headers: savedSession?.access_token ? { Authorization: `Bearer ${savedSession.access_token}` } : {},
