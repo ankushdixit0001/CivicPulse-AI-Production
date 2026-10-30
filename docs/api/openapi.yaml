@@ -121,6 +121,7 @@ paths:
         '403': { description: Staff/admin required }
   /api/tickets/{issueId}/comments:
     get:
+      security: [{ bearerAuth: [] }]
       summary: List comments (authenticated)
       responses:
         '200': { description: Comment list }
@@ -129,6 +130,13 @@ paths:
       summary: Add a comment as the authenticated user
       responses:
         '201': { description: Created comment }
+        '401': { description: Authentication required }
+  /api/tickets/{issueId}/events:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: List authenticated issue history
+      responses:
+        '200': { description: Event history }
         '401': { description: Authentication required }
   /api/tickets/{issueId}/vote:
     post:
