@@ -110,7 +110,7 @@ declare
   v_note text;
 begin
   select role into v_role from public.profiles where id = p_actor_id;
-  if v_role not in ('staff','admin') then
+  if v_role is null or v_role not in ('staff','admin') then
     raise exception 'Staff or admin role required' using errcode = '42501';
   end if;
 
