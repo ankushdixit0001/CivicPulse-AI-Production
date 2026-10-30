@@ -14,6 +14,7 @@
 | [02 — Low-level design](./02-lld.md) | API contracts, workflows, role matrix, state transitions, validation and test strategy |
 | [03 — Database ERD](./03-erd.md) | Current-state ERD, entity descriptions and recommended extension model |
 | [04 — Database SQL design](./04-database-sql-design.sql) | Reference DDL for a fresh schema plus non-applied hardening patches |
+| [04a — Transactional RPC design](./04a-database-rpc-design.sql) | Report deduplication, rate limits, vote counters and atomic resolution/event routines |
 | [05 — External API research](./05-external-api-research.md) | Official API documentation, provider fit, availability checks, constraints and recommendations |
 | [06 — Phase 0–4 scope and acceptance](./06-phase0-4-scope.md) | Phase boundaries, assumptions, decisions, open questions and exit criteria |
 
