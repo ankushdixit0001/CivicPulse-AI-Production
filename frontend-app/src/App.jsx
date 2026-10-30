@@ -17,10 +17,11 @@ import {
 import { Link, NavLink, Route, Routes } from 'react-router-dom';
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
+import { clearSession, persistSession, readStoredSession, refreshAuthSession, signInWithPassword, signOutRemote, signUp } from './lib/auth.js';
 
-const SUPABASE_URL = 'https://ccrhdrjywnaccthzyjte.supabase.co';
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || 'https://ccrhdrjywnaccthzyjte.supabase.co').replace(/\/+$/, '');
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
-const apiBase = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:4000' : `${SUPABASE_URL}/functions/v1/civicpulse-api`)).replace(/\/+$/, '');
+const apiBase = (import.meta.env.VITE_API_BASE_URL || `${SUPABASE_URL}/functions/v1/civicpulse-api`).replace(/\/+$/, '');
 const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
 
 function formatRelativeTime(value) {
@@ -804,9 +805,7 @@ function CommandCenterPage() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState('signin');
-  const [authSession, setAuthSession] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('civicpulse_session') || 'null'); } catch { return null; }
-  });
+  const [authSession, setAuthSession] = useState(() => readStoredSession());
   const [profileRole, setProfileRole] = useState('resident');
   const [authMessage, setAuthMessage] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -856,18 +855,12 @@ function CommandCenterPage() {
       const expiresAt = Number(authSession.expires_at || 0);
       if (!authSession.refresh_token || !expiresAt || expiresAt > Math.floor(Date.now() / 1000) + 120) return;
       try {
-        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-          method: 'POST',
-          headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: authSession.refresh_token }),
-        });
-        const refreshed = await response.json();
-        if (!response.ok || !refreshed.access_token) throw new Error('Session expired');
-        const nextSession = { ...refreshed, expires_at: refreshed.expires_at || Math.floor(Date.now() / 1000) + Number(refreshed.expires_in || 3600) };
-        if (!cancelled) {
-          localStorage.setItem('civicpulse_session', JSON.stringify(nextSession));
-          setAuthSession(nextSession);
-        }
+        const refreshed = await refreshAuthSession(
+          { supabaseUrl: SUPABASE_URL, publishableKey: SUPABASE_KEY },
+          authSession.refresh_token,
+        );
+        const nextSession = persistSession(refreshed);
+        if (!cancelled) setAuthSession(nextSession);
       } catch {
         if (!cancelled && expiresAt <= Math.floor(Date.now() / 1000)) {
           localStorage.removeItem('civicpulse_session');
@@ -891,17 +884,12 @@ function CommandCenterPage() {
     setAuthMessage('');
     try {
       const signup = authMode === 'signup';
-      const endpoint = signup ? `${SUPABASE_URL}/auth/v1/signup` : `${SUPABASE_URL}/auth/v1/token?grant_type=password`;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authEmail.trim(), password: authPassword }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.msg || result.message || result.error_description || 'Authentication failed.');
+      const config = { supabaseUrl: SUPABASE_URL, publishableKey: SUPABASE_KEY };
+      const result = signup
+        ? await signUp(config, authEmail, authPassword)
+        : await signInWithPassword(config, authEmail, authPassword);
       if (result.access_token) {
-        const session = { ...result, expires_at: result.expires_at || Math.floor(Date.now() / 1000) + Number(result.expires_in || 3600) };
-        localStorage.setItem('civicpulse_session', JSON.stringify(session));
+        const session = persistSession(result);
         setAuthSession(session);
         setAuthMessage('Signed in. Staff actions require the staff/admin profile role.');
       } else {
@@ -913,11 +901,17 @@ function CommandCenterPage() {
     } finally { setAuthBusy(false); }
   };
 
-  const signOut = () => {
-    localStorage.removeItem('civicpulse_session');
-    setAuthSession(null);
-    setProfileRole('resident');
-    setAuthMessage('Signed out.');
+  const signOut = async () => {
+    try {
+      await signOutRemote({ supabaseUrl: SUPABASE_URL, publishableKey: SUPABASE_KEY }, authSession?.access_token);
+    } catch (error) {
+      console.warn('Remote sign out failed; clearing local session:', error);
+    } finally {
+      clearSession();
+      setAuthSession(null);
+      setProfileRole('resident');
+      setAuthMessage('Signed out.');
+    }
   };
 
   const toggleVote = async (ticketId) => {
