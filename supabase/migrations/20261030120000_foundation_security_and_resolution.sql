@@ -199,6 +199,9 @@ begin
   if not found then raise exception 'Issue not found' using errcode='P0002'; end if;
 
   v_previous := v_issue.status;
+  if p_next_status is null then
+    raise exception 'Next status is required' using errcode='22023';
+  end if;
   if p_next_status = 'Resolved' then
     raise exception 'Use the resolution confirmation workflow' using errcode='23514';
   end if;
