@@ -15,9 +15,6 @@ on:
 jobs:
   frontend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend-app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,9 +22,11 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend-app/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
+      - name: Verify frontend lockfile
+        run: test -s frontend-app/package-lock.json && test -s frontend-app/package.json
+      - run: npm ci --prefix frontend-app
+      - run: npm test --prefix frontend-app
+      - run: npm run build --prefix frontend-app
 
   sql-static:
     runs-on: ubuntu-latest
@@ -37,5 +36,6 @@ jobs:
         run: |
           test -s supabase/migrations/20261030120000_foundation_security_and_resolution.sql
           test -s supabase/tests/foundation_rls.test.sql
-          grep -q 'enable row level security' supabase/migrations/20261030120000_foundation_security_and_resolution.sql || grep -q 'RLS' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
+          grep -q 'RLS' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
           grep -q 'confirm_civic_issue_resolution' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
+          grep -q 'transition_civic_issue_status' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
