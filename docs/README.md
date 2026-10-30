@@ -50,3 +50,23 @@ Start with the audit, then HLD/LLD, then ERD/SQL, and finish with API research a
 ## Supplemental verification note
 
 On 2026-10-30, the connected Supabase project was re-read: project status `ACTIVE_HEALTHY`, PostgreSQL 17.11, and `civicpulse-api` ACTIVE v14 (`verify_jwt=false`). The read-only security advisor reports leaked-password protection disabled. A no-credential request to the OpenAI models endpoint returned HTTP 401, which confirms authentication is required but does not verify a successful model inference. The supplemental provider matrix is in [07 — Provider research addendum](./07-provider-verification-addendum.md).
+
+
+## Additional target-state design artifacts
+
+The numbered lowercase documents above record the **current production baseline and its proposed hardening**. The following uppercase/hyphenated documents and SQL files provide a broader **target-state, multi-tenant design** for the full product scope:
+
+| Artifact | Purpose |
+|---|---|
+| [Target HLD](./01-HLD.md) | Multi-tenant municipal architecture and service boundaries |
+| [Target LLD](./02-LLD.md) | Expanded feature specifications, lifecycle, API catalog and async jobs |
+| [Target database design](./03-DATABASE-DESIGN.md) | Multi-tenant ERD, table catalog, indexes, RLS intent and privacy model |
+| [Target core SQL reference](./sql/001_civicpulse_core.sql) | Proposed core schema for tenants, memberships, issues, media, assignments, AI, jobs and notifications |
+| [Target RLS policy draft](./sql/002_rls_policy_design.sql) | Draft policies and explicit limitations requiring security tests |
+| [Additional API research](./04-API-RESEARCH.md) | Provider adapters, geospatial, notification and availability matrix |
+
+**Document precedence:** use the live-state audit (00-project-audit.md) to understand what currently exists. Use 01-HLD.md, 02-LLD.md, 03-DATABASE-DESIGN.md and docs/sql/* as the broader target-state proposal. The earlier HLD.md and PROJECT_AUDIT.md are overlapping drafts and are retained as historical artifacts; do not treat them as additional independent specifications. The SQL files in docs/ are reference designs only and must not be applied to production as-is.
+
+## Documentation consistency warning
+
+There are overlapping files with different naming conventions because multiple design drafts exist in the repository. Before Phase 5, consolidate the approved target-state documents into one canonical set and reconcile the current-state schema with the multi-tenant target schema. In particular, the live schema currently has a single profiles.role model and no tenants/memberships tables, while the target SQL introduces multi-tenant entities. This is an intentional architectural expansion, not a description of the live database.
