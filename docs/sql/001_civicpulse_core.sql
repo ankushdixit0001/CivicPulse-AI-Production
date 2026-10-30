@@ -148,6 +148,7 @@ create table public.issue_media (
   created_at timestamptz not null default now(),
   foreign key (tenant_id, issue_id) references public.civic_issues(tenant_id, id) on delete cascade,
   unique (bucket_id, object_path),
+  unique (tenant_id, id),
   check (content_type in ('image/jpeg','image/png','image/webp'))
 );
 create index issue_media_issue_idx on public.issue_media(issue_id, created_at);
@@ -300,8 +301,8 @@ create table public.repair_verifications (
   id uuid primary key default gen_random_uuid(),
   tenant_id uuid not null,
   issue_id uuid not null,
-  before_media_id uuid references public.issue_media(id) on delete set null,
-  after_media_id uuid not null references public.issue_media(id) on delete restrict,
+  before_media_id uuid,
+  after_media_id uuid not null,
   analysis_id uuid references public.ai_analyses(id) on delete set null,
   suggested_repaired boolean,
   confidence numeric(5,4) check (confidence is null or confidence between 0 and 1),
@@ -312,7 +313,9 @@ create table public.repair_verifications (
   reviewed_at timestamptz,
   review_note text,
   created_at timestamptz not null default now(),
-  foreign key (tenant_id, issue_id) references public.civic_issues(tenant_id, id) on delete cascade
+  foreign key (tenant_id, issue_id) references public.civic_issues(tenant_id, id) on delete cascade,
+  foreign key (tenant_id, before_media_id) references public.issue_media(tenant_id, id) on delete set null,
+  foreign key (tenant_id, after_media_id) references public.issue_media(tenant_id, id) on delete restrict
 );
 create index repair_verifications_issue_created_idx on public.repair_verifications(issue_id, created_at desc);
 
