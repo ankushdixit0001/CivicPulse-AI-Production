@@ -245,7 +245,7 @@ async function addEvent(issueId: string, actorId: string | null, eventType: stri
     issue_id: issueId, actor_id: actorId, event_type: eventType,
     old_status: oldStatus, new_status: newStatus, note, metadata,
   });
-  if (error) console.error("Could not append issue event:", error.message);
+  if (error) throw new Error("Could not append issue event: " + error.message);
 }
 
 Deno.serve(async (req: Request) => {
@@ -355,6 +355,8 @@ Deno.serve(async (req: Request) => {
     if (issueMatch) {
       const [, issueId, action] = issueMatch;
       if (req.method === "GET" && action === "comments") {
+        const user = await currentUser(req);
+        if (!user) return fail("Sign in to view issue comments.", 401);
         const { data, error } = await supabase.from("issue_comments").select("id,issue_id,author_id,body,created_at").eq("issue_id", issueId).order("created_at", { ascending: true }).limit(200);
         if (error) throw new Error(error.message);
         return json(data || []);
@@ -371,6 +373,8 @@ Deno.serve(async (req: Request) => {
         return json(data, 201);
       }
       if (req.method === "GET" && action === "events") {
+        const user = await currentUser(req);
+        if (!user) return fail("Sign in to view issue history.", 401);
         const { data, error } = await supabase.from("issue_events").select("id,issue_id,actor_id,event_type,old_status,new_status,note,metadata,created_at").eq("issue_id", issueId).order("created_at", { ascending: false }).limit(100);
         if (error) throw new Error(error.message);
         return json(data || []);
@@ -392,16 +396,21 @@ Deno.serve(async (req: Request) => {
       if (req.method === "PATCH" && action === "status") {
         const auth = await requireStaff(req);
         if ("error" in auth) return fail(auth.error, auth.status);
-        const body = await req.json();
+        const body = await req.json().catch(() => ({}));
         const nextStatus = String(body.status || "");
         if (!allowedStatuses.has(nextStatus)) return fail("Invalid ticket status.");
-        if (nextStatus === "Resolved") return fail("Upload real after-repair evidence through the resolution workflow.", 400);
-        const { data: previous, error: findError } = await supabase.from("civic_issues").select("status").eq("id", issueId).maybeSingle();
-        if (findError) throw new Error(findError.message);
-        if (!previous) return fail("Ticket not found.", 404);
-        const { data, error } = await supabase.from("civic_issues").update({ status: nextStatus, assigned_to: auth.user.id }).eq("id", issueId).select("*").single();
-        if (error) throw new Error(error.message);
-        await addEvent(issueId, auth.user.id, nextStatus === "Assigned" ? "assigned" : "status_changed", previous.status, nextStatus, "Workflow updated by staff");
+        const { data, error } = await supabase.rpc("transition_civic_issue_status", {
+          p_issue_id: issueId,
+          p_actor_id: auth.user.id,
+          p_next_status: nextStatus,
+        });
+        if (error) {
+          const message = error.message || "Status update failed.";
+          if (/not found/i.test(message)) return fail("Ticket not found.", 404);
+          if (/role required/i.test(message)) return fail(message, 403);
+          if (/transition|resolved|resolution confirmation/i.test(message)) return fail(message, 409);
+          throw new Error(message);
+        }
         return json(normalizeIssue(data));
       }
       if (req.method === "POST" && action === "resolve") {
@@ -448,37 +457,29 @@ Deno.serve(async (req: Request) => {
       if (req.method === "POST" && action === "resolve/confirm") {
         const auth = await requireStaff(req);
         if ("error" in auth) return fail(auth.error, auth.status);
-        const { data: issue, error: issueError } = await supabase.from("civic_issues").select("*").eq("id", issueId).maybeSingle();
-        if (issueError) throw new Error(issueError.message);
-        if (!issue) return fail("Ticket not found.", 404);
-        const verification = issue.ai_metadata?.resolution_verification;
-        if (!issue.after_image_path) return fail("Upload an after-repair photo before confirming resolution.", 409);
         const body = await req.json().catch(() => ({}));
-        const aiPassed = verification?.status === "success"
-          && verification?.is_resolved === true
-          && Number.isFinite(Number(verification?.confidence))
-          && Number(verification.confidence) >= 0.85;
         const manualOverride = body.manual_override === true;
         const reviewNote = String(body.review_note || "").trim().slice(0, 500);
-        if (!aiPassed && (!manualOverride || reviewNote.length < 10)) {
-          return fail("AI verification did not pass. A staff member must explicitly inspect the after photo and provide a review note to override it.", 409);
-        }
-        const now = new Date().toISOString();
-        const { data, error } = await supabase.from("civic_issues").update({
-          status: "Resolved", resolution_verified_at: now, resolved_at: now, assigned_to: auth.user.id,
-        }).eq("id", issueId).select("*").single();
-        if (error) throw new Error(error.message);
-        const eventNote = aiPassed
-          ? "Staff confirmed AI-assisted repair verification"
-          : "Staff manually overrode AI verification after inspecting repair evidence";
-        await addEvent(issueId, auth.user.id, "resolved", issue.status, "Resolved", eventNote, {
-          ai_verified: aiPassed,
-          manual_override: !aiPassed,
-          review_note: reviewNote || null,
-          confidence: verification?.confidence ?? null,
-          resolution_score: verification?.resolution_score ?? null,
+        const { data, error } = await supabase.rpc("confirm_civic_issue_resolution", {
+          p_issue_id: issueId,
+          p_actor_id: auth.user.id,
+          p_manual_override: manualOverride,
+          p_review_note: reviewNote,
         });
-        return json({ ticket: normalizeIssue(data), verified: aiPassed, staff_confirmed: true, manual_override: !aiPassed });
+        if (error) {
+          const message = error.message || "Resolution confirmation failed.";
+          if (/not found/i.test(message)) return fail("Ticket not found.", 404);
+          if (/already resolved/i.test(message)) return fail("Ticket is already resolved.", 409);
+          if (/required|did not pass|manual staff review/i.test(message)) return fail(message, 409);
+          if (/role required/i.test(message)) return fail(message, 403);
+          throw new Error(message);
+        }
+        return json({
+          ticket: normalizeIssue(data),
+          verified: data.resolution_verified_at !== null,
+          staff_confirmed: true,
+          manual_override: manualOverride,
+        });
       }
     }
 

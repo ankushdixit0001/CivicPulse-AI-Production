@@ -1,0 +1,41 @@
+name: CivicPulse foundation checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend-app/**'
+      - 'supabase/**'
+      - 'docs/api/**'
+      - '.github/workflows/foundation-checks.yml'
+  push:
+    branches: [feat/foundation-phase-5]
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend-app/package-lock.json
+      - name: Verify frontend lockfile
+        run: test -s frontend-app/package-lock.json && test -s frontend-app/package.json
+      - run: npm ci --prefix frontend-app
+      - run: npm test --prefix frontend-app
+      - run: npm run build --prefix frontend-app
+
+  sql-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check migration and policy assertions are present
+        run: |
+          test -s supabase/migrations/20261030120000_foundation_security_and_resolution.sql
+          test -s supabase/tests/foundation_rls.test.sql
+          grep -q 'RLS' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
+          grep -q 'confirm_civic_issue_resolution' supabase/migrations/20261030120000_foundation_security_and_resolution.sql
+          grep -q 'transition_civic_issue_status' supabase/migrations/20261030120000_foundation_security_and_resolution.sql

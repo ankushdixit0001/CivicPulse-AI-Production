@@ -1,0 +1,147 @@
+openapi: 3.1.0
+info:
+  title: CivicPulse API
+  version: 1.0.0
+  description: Foundation API contract. AI inference endpoints are explicitly outside this foundation gate.
+servers:
+  - url: https://{project}.supabase.co/functions/v1/civicpulse-api
+    variables:
+      project:
+        default: ccrhdrjywnaccthzyjte
+security: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ApiError:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    UserProfile:
+      type: object
+      required: [authenticated, role]
+      properties:
+        authenticated: { type: boolean }
+        user:
+          type: [object, 'null']
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: [string, 'null'], format: email }
+        role: { type: [string, 'null'], enum: [resident, staff, admin, null] }
+        display_name: { type: string }
+    Issue:
+      type: object
+      required: [id, defect_type, description, status, priority_score]
+      properties:
+        id: { type: string, format: uuid }
+        defect_type: { type: string, enum: [pothole, garbage, sewage, streetlight, unknown] }
+        description: { type: string, minLength: 5, maxLength: 2000 }
+        status: { type: string, enum: [Pending, Assigned, 'In Progress', Resolved] }
+        priority_score: { type: integer, minimum: 0, maximum: 100 }
+        severity: { type: string, enum: [LOW, MEDIUM, CRITICAL] }
+        location:
+          type: object
+          properties:
+            type: { const: Point }
+            coordinates:
+              type: array
+              prefixItems: [{ type: number, minimum: -180, maximum: 180 }, { type: number, minimum: -90, maximum: 90 }]
+              minItems: 2
+              maxItems: 2
+paths:
+  /api/health:
+    get:
+      summary: API and database process health (not an AI-provider health check)
+      responses:
+        '200': { description: Healthy }
+  /api/me:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Resolve current user and database-backed role
+      responses:
+        '200': { description: Current identity and role }
+        '401': { description: Invalid or missing session }
+  /api/tickets:
+    get:
+      summary: List public civic issues
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [Pending, Assigned, 'In Progress', Resolved] }
+        - in: query
+          name: defect_type
+          schema: { type: string, enum: [pothole, garbage, sewage, streetlight, unknown] }
+        - in: query
+          name: zone
+          schema: { type: string, maxLength: 80 }
+        - in: query
+          name: priority_score
+          schema: { type: number, minimum: 0, maximum: 100 }
+      responses:
+        '200': { description: Issue list }
+  /api/tickets/report:
+    post:
+      summary: Create or merge a civic issue (multipart/form-data)
+      description: Public intake; authenticated users are attributed to their user ID. Upload is limited to JPEG/PNG/WebP, 8 MiB.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image, defect_type, description, latitude, longitude]
+              properties:
+                image: { type: string, format: binary }
+                defect_type: { type: string, enum: [pothole, garbage, sewage, streetlight, unknown] }
+                description: { type: string, minLength: 5, maxLength: 2000 }
+                latitude: { type: number, minimum: -90, maximum: 90 }
+                longitude: { type: number, minimum: -180, maximum: 180 }
+                landmark: { type: string, maxLength: 200 }
+      responses:
+        '201': { description: New issue created }
+        '200': { description: Existing nearby issue merged }
+        '400': { description: Invalid input }
+        '429': { description: Rate limit reached }
+  /api/tickets/{issueId}/status:
+    patch:
+      security: [{ bearerAuth: [] }]
+      summary: Change ticket status (staff/admin only)
+      parameters:
+        - in: path
+          name: issueId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated issue }
+        '401': { description: Authentication required }
+        '403': { description: Staff/admin required }
+  /api/tickets/{issueId}/comments:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: List comments (authenticated)
+      responses:
+        '200': { description: Comment list }
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Add a comment as the authenticated user
+      responses:
+        '201': { description: Created comment }
+        '401': { description: Authentication required }
+  /api/tickets/{issueId}/events:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: List authenticated issue history
+      responses:
+        '200': { description: Event history }
+        '401': { description: Authentication required }
+  /api/tickets/{issueId}/vote:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Toggle current user's vote
+      responses:
+        '200': { description: Vote state }
+        '401': { description: Authentication required }
