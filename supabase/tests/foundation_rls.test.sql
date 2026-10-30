@@ -32,4 +32,12 @@ begin
     'public.confirm_civic_issue_resolution(uuid,uuid,boolean,text)','EXECUTE') then
     raise exception 'Anonymous users can execute privileged resolution routine';
   end if;
+  if not has_function_privilege('service_role',
+    'public.transition_civic_issue_status(uuid,uuid,public.civic_issue_status)','EXECUTE') then
+    raise exception 'Service role cannot execute status transition routine';
+  end if;
+  if has_function_privilege('authenticated',
+    'public.transition_civic_issue_status(uuid,uuid,public.civic_issue_status)','EXECUTE') then
+    raise exception 'Authenticated users can execute privileged status transition routine';
+  end if;
 end $$;
