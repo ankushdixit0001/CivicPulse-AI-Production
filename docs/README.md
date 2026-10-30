@@ -17,6 +17,8 @@
 | [04a — Transactional RPC design](./04a-database-rpc-design.sql) | Report deduplication, rate limits, vote counters and atomic resolution/event routines |
 | [05 — External API research](./05-external-api-research.md) | Official API documentation, provider fit, availability checks, constraints and recommendations |
 | [06 — Phase 0–4 scope and acceptance](./06-phase0-4-scope.md) | Phase boundaries, assumptions, decisions, open questions and exit criteria |
+| [07 — Provider research addendum](./07-provider-verification-addendum.md) | Additional official provider documentation, current free-tier caveats, and a verification matrix distinguishing control-plane status from authenticated runtime tests |
+
 
 ## Source-of-truth decision
 
@@ -44,3 +46,7 @@ Start with the audit, then HLD/LLD, then ERD/SQL, and finish with API research a
 - Supabase's security advisor reports leaked-password protection disabled.
 - The vision container is not confirmed deployed/configured; the Edge Function can fall back to a community inference gateway that has no verified SLA or privacy contract in the reviewed sources.
 - A Supabase migration recorded in the live project (`index_foreign_keys`) is not present in the selected repository tree. Reconcile migration history before schema work.
+
+## Supplemental verification note
+
+On 2026-10-30, the connected Supabase project was re-read: project status `ACTIVE_HEALTHY`, PostgreSQL 17.11, and `civicpulse-api` ACTIVE v14 (`verify_jwt=false`). The read-only security advisor reports leaked-password protection disabled. A no-credential request to the OpenAI models endpoint returned HTTP 401, which confirms authentication is required but does not verify a successful model inference. The supplemental provider matrix is in [07 — Provider research addendum](./07-provider-verification-addendum.md).
