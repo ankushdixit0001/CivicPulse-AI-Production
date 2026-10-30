@@ -104,6 +104,7 @@ as $$
 declare
   v_role public.civic_user_role;
   v_issue public.civic_issues%rowtype;
+  v_old_status public.civic_issue_status;
   v_verification jsonb;
   v_ai_passed boolean;
   v_note text;
@@ -127,6 +128,7 @@ begin
     raise exception 'After-repair evidence is required' using errcode = '23514';
   end if;
 
+  v_old_status := v_issue.status;
   v_verification := coalesce(v_issue.ai_metadata->'resolution_verification','{}'::jsonb);
   v_ai_passed := coalesce(v_verification->>'status','') = 'success'
     and coalesce((v_verification->>'is_resolved')::boolean,false)
@@ -151,7 +153,7 @@ begin
     issue_id,actor_id,event_type,old_status,new_status,note,metadata
   ) values (
     p_issue_id,p_actor_id,'resolved',
-    (select status from public.civic_issues where id=p_issue_id), -- overwritten below by event metadata
+    v_old_status,
     'Resolved',
     coalesce(v_note,case when v_ai_passed then 'Staff confirmed AI-assisted repair evidence' else 'Staff manually confirmed repair' end),
     jsonb_build_object('ai_verified',v_ai_passed,'manual_override',not v_ai_passed,
