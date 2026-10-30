@@ -172,3 +172,62 @@ grant execute on function public.confirm_civic_issue_resolution(uuid,uuid,boolea
 -- 5. Explicit grants for Data API roles are intentionally narrow. Newly created public-schema
 -- tables on current Supabase projects may not receive default grants; add grants alongside
 -- future table creation and RLS policies.
+
+-- 6. Atomic staff status transition and audit append.
+create or replace function public.transition_civic_issue_status(
+  p_issue_id uuid,
+  p_actor_id uuid,
+  p_next_status public.civic_issue_status
+)
+returns public.civic_issues
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_role public.civic_user_role;
+  v_issue public.civic_issues%rowtype;
+  v_previous public.civic_issue_status;
+  v_event text;
+begin
+  select role into v_role from public.profiles where id=p_actor_id;
+  if v_role is null or v_role not in ('staff','admin') then
+    raise exception 'Staff or admin role required' using errcode='42501';
+  end if;
+
+  select * into v_issue from public.civic_issues where id=p_issue_id for update;
+  if not found then raise exception 'Issue not found' using errcode='P0002'; end if;
+
+  v_previous := v_issue.status;
+  if p_next_status = 'Resolved' then
+    raise exception 'Use the resolution confirmation workflow' using errcode='23514';
+  end if;
+  if v_previous = 'Resolved' then
+    raise exception 'Resolved issues cannot be reopened through this endpoint' using errcode='23514';
+  end if;
+  if not (
+    (v_previous='Pending' and p_next_status='Assigned')
+    or (v_previous='Assigned' and p_next_status='In Progress')
+    or (v_previous='In Progress' and p_next_status='Assigned')
+    or (v_previous=p_next_status)
+  ) then
+    raise exception 'Invalid issue status transition' using errcode='23514';
+  end if;
+
+  update public.civic_issues
+     set status=p_next_status,
+         assigned_to=case when p_next_status='Assigned' then p_actor_id else assigned_to end
+   where id=p_issue_id returning * into v_issue;
+
+  v_event := case when p_next_status='Assigned' then 'assigned' else 'status_changed' end;
+  insert into public.issue_events(issue_id,actor_id,event_type,old_status,new_status,note)
+  values(p_issue_id,p_actor_id,v_event,v_previous,p_next_status,'Workflow updated by staff');
+
+  return v_issue;
+end;
+$$;
+
+revoke all on function public.transition_civic_issue_status(uuid,uuid,public.civic_issue_status)
+  from public,anon,authenticated;
+grant execute on function public.transition_civic_issue_status(uuid,uuid,public.civic_issue_status)
+  to service_role;
