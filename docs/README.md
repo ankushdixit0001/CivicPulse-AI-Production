@@ -65,7 +65,7 @@ The numbered lowercase documents above record the **current production baseline 
 | [Target RLS policy draft](./sql/002_rls_policy_design.sql) | Draft policies and explicit limitations requiring security tests |
 | [Additional API research](./04-API-RESEARCH.md) | Provider adapters, geospatial, notification and availability matrix |
 
-**Document precedence:** use the live-state audit (00-project-audit.md) to understand what currently exists. Use 01-HLD.md, 02-LLD.md, 03-DATABASE-DESIGN.md and docs/sql/* as the broader target-state proposal. The earlier HLD.md and PROJECT_AUDIT.md are overlapping drafts and are retained as historical artifacts; do not treat them as additional independent specifications. The SQL files in docs/ are reference designs only and must not be applied to production as-is.
+**Document precedence:** use the live-state audit (00-project-audit.md) to understand what currently exists. Use 01-HLD.md, 02-LLD.md, 03-DATABASE-DESIGN.md and docs/sql/* as the broader target-state proposal. The target-state uppercase files are the expanded future architecture; they complement rather than replace the lowercase current-state baseline. Do not treat them as descriptions of already deployed features. The SQL files in docs/ are reference designs only and must not be applied to production as-is.
 
 ## Documentation consistency warning
 
