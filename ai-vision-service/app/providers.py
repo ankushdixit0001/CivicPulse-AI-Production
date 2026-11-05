@@ -26,7 +26,7 @@ _PROVIDER_STATE: Dict[str, Dict[str, Any]] = {
         "last_latency_ms": None,
         "last_error_code": None,
     }
-    for name in ("gemini", "openrouter", "openai")
+    for name in ("gemini", "openrouter", "openai", "qwen_vl")
 }
 IMAGE_TASKS = {"image_triage", "repair_verification"}
 TEXT_TASKS = {"chat", "translation", "health_probe"}
@@ -44,7 +44,7 @@ def _priority() -> List[str]:
     # The default includes all adapters; an explicit short list disables the others.
     raw = os.getenv("AI_PROVIDER_PRIORITY", "gemini,openrouter,openai")
     values = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    supported = {"gemini", "openrouter", "openai"}
+    supported = {"gemini", "openrouter", "openai", "qwen_vl"}
     ordered: List[str] = []
     for name in values:
         if name in supported and name not in ordered:
@@ -59,11 +59,20 @@ def _policy_allows(task: str) -> bool:
 
 
 def _key_for(provider: str) -> str:
+    if provider == "qwen_vl":
+        # Require a private OpenAI-compatible endpoint and its credential.
+        base_url = os.getenv("QWEN_VL_BASE_URL", "").strip()
+        api_key = os.getenv("QWEN_VL_API_KEY", "").strip()
+        if not base_url.startswith(("https://", "http://")) or not api_key:
+            return ""
+        return api_key
     env_name = {"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}[provider]
     return os.getenv(env_name, "").strip()
 
 
 def _model_for(provider: str, contains_image: bool) -> str:
+    if provider == "qwen_vl":
+        return os.getenv("QWEN_VL_MODEL", "Qwen/Qwen3-VL-4B-Instruct").strip()
     if provider == "gemini":
         return os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
     if provider == "openrouter":
@@ -210,7 +219,13 @@ async def _request_json(provider: str, messages: List[Dict[str, Any]], max_token
             key = _key_for(provider)
             if not key:
                 raise ProviderUnavailable(f"{provider} is not configured.", "not_configured")
-            base_url = "https://openrouter.ai/api/v1/chat/completions" if provider == "openrouter" else "https://api.openai.com/v1/chat/completions"
+            if provider == "qwen_vl":
+                endpoint = os.getenv("QWEN_VL_BASE_URL", "").strip().rstrip("/")
+                if not endpoint.startswith(("https://", "http://")):
+                    raise ProviderUnavailable("Qwen vision endpoint must use HTTP or HTTPS.", "invalid_provider_endpoint")
+                base_url = endpoint + ("/chat/completions" if endpoint.endswith("/v1") else "/v1/chat/completions")
+            else:
+                base_url = "https://openrouter.ai/api/v1/chat/completions" if provider == "openrouter" else "https://api.openai.com/v1/chat/completions"
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             if provider == "openrouter":
                 headers["HTTP-Referer"] = os.getenv("OPENROUTER_SITE_URL", "https://civicpulse-ai-production.vercel.app")
@@ -247,7 +262,7 @@ def provider_configuration() -> Dict[str, Any]:
         allowed_tasks: List[str] = []
         if configured and allow_image and (name != "openrouter" or allow_openrouter_image):
             allowed_tasks.extend(["image_triage", "repair_verification"])
-        if configured and allow_text and (name != "openrouter" or allow_openrouter_text):
+        if name != "qwen_vl" and configured and allow_text and (name != "openrouter" or allow_openrouter_text):
             allowed_tasks.extend(["chat", "translation", "health_probe"])
         providers[name] = {
             "configured": configured,
@@ -274,6 +289,8 @@ def task_configured(task: str) -> bool:
         return False
     for provider in _priority():
         if not _key_for(provider):
+            continue
+        if provider == "qwen_vl" and task not in IMAGE_TASKS:
             continue
         if provider == "openrouter":
             if task in IMAGE_TASKS and not _enabled("ALLOW_OPENROUTER_IMAGE_FALLBACK", False):
@@ -313,6 +330,8 @@ async def generate_json(messages: List[Dict[str, Any]], max_tokens: int = 900, t
     attempted = 0
     for provider in _priority():
         if not _key_for(provider):
+            continue
+        if provider == "qwen_vl" and not contains_image:
             continue
         if provider == "openrouter":
             if contains_image and not _enabled("ALLOW_OPENROUTER_IMAGE_FALLBACK", False):
