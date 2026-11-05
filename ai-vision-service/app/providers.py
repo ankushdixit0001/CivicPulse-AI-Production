@@ -257,7 +257,7 @@ def provider_configuration() -> Dict[str, Any]:
     allow_openrouter_image = _enabled("ALLOW_OPENROUTER_IMAGE_FALLBACK", False)
     allow_openrouter_text = _enabled("ALLOW_OPENROUTER_TEXT_FALLBACK", False)
     providers: Dict[str, Any] = {}
-    for name in ("gemini", "openrouter", "openai"):
+    for name in ("gemini", "openrouter", "openai", "qwen_vl"):
         configured = bool(_key_for(name))
         allowed_tasks: List[str] = []
         if configured and allow_image and (name != "openrouter" or allow_openrouter_image):
