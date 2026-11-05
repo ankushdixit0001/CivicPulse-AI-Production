@@ -171,5 +171,47 @@ class ProviderPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(task_configured("image_triage"))
 
 
+class QwenVisionProviderTests(unittest.TestCase):
+    def test_qwen_requires_private_endpoint_and_api_key(self):
+        from app.providers import _key_for, _model_for
+        with patch.dict(os.environ, {
+            "QWEN_VL_BASE_URL": "https://vision.example.com/v1",
+            "QWEN_VL_API_KEY": "test-secret",
+        }, clear=True):
+            self.assertEqual(_key_for("qwen_vl"), "test-secret")
+            self.assertEqual(_model_for("qwen_vl", True), "Qwen/Qwen3-VL-4B-Instruct")
+        with patch.dict(os.environ, {
+            "QWEN_VL_BASE_URL": "https://vision.example.com/v1",
+        }, clear=True):
+            self.assertEqual(_key_for("qwen_vl"), "")
+        with patch.dict(os.environ, {
+            "QWEN_VL_BASE_URL": "file:///tmp/unsafe",
+            "QWEN_VL_API_KEY": "test-secret",
+        }, clear=True):
+            self.assertEqual(_key_for("qwen_vl"), "")
+
+    def test_qwen_is_image_only_and_requires_explicit_privacy_policy(self):
+        from app.providers import provider_configuration
+        with patch.dict(os.environ, {
+            "AI_PROVIDER_PRIORITY": "qwen_vl",
+            "QWEN_VL_BASE_URL": "https://vision.example.com/v1",
+            "QWEN_VL_API_KEY": "test-secret",
+            "ALLOW_EXTERNAL_IMAGE_AI": "true",
+            "ALLOW_EXTERNAL_TEXT_AI": "true",
+        }, clear=True):
+            self.assertTrue(task_configured("image_triage"))
+            self.assertFalse(task_configured("chat"))
+            qwen = provider_configuration()["providers"]["qwen_vl"]
+            self.assertEqual(qwen["allowed_tasks"], ["image_triage", "repair_verification"])
+            self.assertEqual(qwen["model"], "Qwen/Qwen3-VL-4B-Instruct")
+        with patch.dict(os.environ, {
+            "AI_PROVIDER_PRIORITY": "qwen_vl",
+            "QWEN_VL_BASE_URL": "https://vision.example.com/v1",
+            "QWEN_VL_API_KEY": "test-secret",
+            "ALLOW_EXTERNAL_IMAGE_AI": "false",
+        }, clear=True):
+            self.assertFalse(task_configured("image_triage"))
+
+
 if __name__ == "__main__":
     unittest.main()
