@@ -374,6 +374,63 @@ async function prepareImageForUpload(file) {
   }
 }
 
+function AnnotatedImage({ src, boxes = [], alt = "AI annotated civic issue" }) {
+  const [dimensions, setDimensions] = useState(null);
+  const validBoxes = (Array.isArray(boxes) ? boxes : []).map((box, index) => {
+    const coords = Array.isArray(box?.bbox) ? box.bbox.map(Number) : [];
+    if (coords.length !== 4 || !coords.every(Number.isFinite)) return null;
+    const [x1, y1, x2, y2] = coords;
+    if (x1 < 0 || y1 < 0 || x2 > 1 || y2 > 1 || x2 <= x1 || y2 <= y1) return null;
+    return { ...box, coords, key: box.id || `box-${index}` };
+  }).filter(Boolean);
+
+  useEffect(() => setDimensions(null), [src]);
+
+  return (
+    <div className="annotated-image-frame">
+      <img
+        src={src}
+        alt={alt}
+        className="annotated-image"
+        onLoad={(event) => setDimensions({
+          width: event.currentTarget.naturalWidth,
+          height: event.currentTarget.naturalHeight,
+        })}
+      />
+      {dimensions && validBoxes.length > 0 && (
+        <svg
+          className="annotated-image-overlay"
+          viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label={`${validBoxes.length} AI detected region${validBoxes.length === 1 ? '' : 's'}`}
+        >
+          {validBoxes.map((box, index) => {
+            const [x1, y1, x2, y2] = box.coords;
+            const x = x1 * dimensions.width;
+            const y = y1 * dimensions.height;
+            const width = (x2 - x1) * dimensions.width;
+            const height = (y2 - y1) * dimensions.height;
+            const label = String(box.label || `Detected issue ${index + 1}`).slice(0, 48);
+            return (
+              <g key={box.key}>
+                <rect x={x} y={y} width={width} height={height} rx={Math.max(4, dimensions.width * 0.004)}
+                  fill="rgba(248, 70, 70, 0.08)" stroke="#ff5252"
+                  strokeWidth={Math.max(3, dimensions.width * 0.004)} vectorEffect="non-scaling-stroke" />
+                <text x={x} y={Math.max(24, y - dimensions.height * 0.012)}
+                  fill="#ffffff" stroke="#991b1b" strokeWidth="3" paintOrder="stroke"
+                  fontSize={Math.max(18, dimensions.width * 0.025)} fontWeight="700">
+                  {label}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </div>
+  );
+}
+
 function ReportPage() {
   const cameraInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -670,7 +727,7 @@ function ReportPage() {
               <div className="upload-grid" />
               <div className="camera-preview">
                 {preview ? (
-                  <img src={preview} alt="Issue preview" className="preview-image" />
+                  <AnnotatedImage src={preview} alt="Issue photo with AI-detected regions" boxes={analysisResult?.available ? analysisResult.bounding_boxes : []} />
                 ) : (
                   <>
                     <div className="camera-frame">
@@ -1279,8 +1336,22 @@ function CommandCenterPage() {
                       <div className="ai-evidence-panel" style={{ marginTop: '10px', padding: '10px', borderRadius: '10px', background: 'rgba(100, 116, 139, 0.10)' }}>
                         <strong style={{ fontSize: '12px' }}>AI triage</strong>
                         <p style={{ fontSize: '12px', margin: '5px 0' }}>{ticket.ai_metadata.summary || (ticket.ai_metadata.status === 'partial' ? 'AI classifier unavailable; manual review required.' : 'Image triage metadata saved.')}</p>
+                        {ticket.ai_metadata.image_url && (
+                          <div style={{ margin: '8px 0' }}>
+                            <AnnotatedImage
+                              src={ticket.ai_metadata.image_url}
+                              alt={`Reported ${ticket.defect_type} image with AI localization`}
+                              boxes={ticket.ai_metadata.bounding_boxes || []}
+                            />
+                            {Array.isArray(ticket.ai_metadata.bounding_boxes) && ticket.ai_metadata.bounding_boxes.length > 0
+                              ? <small style={{ display: 'block', marginTop: '5px', opacity: 0.75 }}>Red outlines show AI-suggested regions; verify against the original photo.</small>
+                              : <small style={{ display: 'block', marginTop: '5px', opacity: 0.75 }}>No validated localization box was returned.</small>}
+                          </div>
+                        )}
                         <p style={{ fontSize: '11px', margin: 0, opacity: 0.8 }}>
-                          {ticket.ai_metadata.model_source === 'openai_vision' ? `Vision confidence: ${Math.round((Number(ticket.ai_metadata.confidence) || 0) * 100)}%` : 'Unverified AI estimate'}
+                          {['openai_vision', 'gemini_vision', 'openrouter_vision', 'qwen_vl_vision'].includes(ticket.ai_metadata.model_source)
+                            ? `Vision confidence: ${Math.round((Number(ticket.ai_metadata.confidence) || 0) * 100)}%`
+                            : 'Unverified AI estimate'}
                           {ticket.ai_metadata.human_review_required ? ' · Human review required' : ''}
                         </p>
                         {ticket.ai_metadata.image_quality?.quality_flags?.length > 0 && <p style={{ fontSize: '11px', margin: '5px 0 0' }}>Photo flags: {ticket.ai_metadata.image_quality.quality_flags.join(', ')}</p>}
