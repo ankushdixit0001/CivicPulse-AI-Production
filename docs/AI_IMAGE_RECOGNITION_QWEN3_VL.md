@@ -92,3 +92,14 @@ The tests cover secure Qwen endpoint configuration, image-only privacy policy, s
 - Unit tests: added, not yet executed in this environment.
 - Live Qwen GPU endpoint: not provisioned.
 - Production environment variables, Supabase deployment, and Render deployment: unchanged.
+
+
+## Bounding-box visualization
+
+- The FastAPI `/analyze` prompt requests tight visual-grounding boxes in 0..1000 coordinates and requires an empty array when the defect cannot be localized reliably.
+- FastAPI validates, clamps, and normalizes accepted boxes to 0..1 coordinates in `bounding_boxes`.
+- The Supabase `/api/ai/analyze` response recognizes `qwen_vl_vision` as an available provider source.
+- The citizen report preview draws red SVG outlines over the local preview after successful analysis.
+- The command-center ticket card draws the same overlays over the stored report image using `ai_metadata.image_url` and `ai_metadata.bounding_boxes`.
+- The overlay is presentation-only and does not alter the original stored image. Staff must verify the highlighted region; no box is shown when the model returns no valid localization.
+- The frontend SVG and image use matching aspect-ratio fitting so the normalized coordinates remain aligned when images are resized responsively.
