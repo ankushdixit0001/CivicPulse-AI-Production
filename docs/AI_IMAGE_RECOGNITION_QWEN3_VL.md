@@ -47,3 +47,48 @@ The current Render vision service is a free CPU web service. It should not load 
 ## Current implementation status
 
 The FastAPI provider router has a Qwen3-VL adapter behind the existing image-processing policy. No GPU endpoint has been provisioned, no Qwen credentials have been configured, and no production image-processing policy has been enabled by this change.
+## Application integration contract
+
+The application-side request path is already present:
+
+1. The citizen report form submits the image and selected defect category to the Supabase Edge Function `POST /tickets/report`.
+2. The Edge Function stores the original image in the `civic-issue-images` bucket.
+3. It forwards the uploaded file and selected category to the authenticated FastAPI `POST /analyze` endpoint using `AI_SERVICE_URL` and `AI_SERVICE_TOKEN`.
+4. FastAPI validates the image, computes image-quality signals, and routes image reasoning through the provider adapter.
+5. The Qwen adapter sends the inline image to the configured OpenAI-compatible Qwen endpoint. The result is normalized and server-side priority is calculated.
+6. The Edge Function persists the AI result as metadata. If inference is unavailable, the report is still saved for manual review.
+
+No Qwen weights should be loaded into the Render CPU gateway. The Qwen endpoint must be independently reachable from Render and protected by TLS and bearer authentication.
+
+### Render environment configuration (only after a private endpoint exists)
+
+- `QWEN_VL_BASE_URL=https://<private-gpu-host>/v1`
+- `QWEN_VL_API_KEY=<endpoint-bearer-secret>`
+- `QWEN_VL_MODEL=Qwen/Qwen3-VL-4B-Instruct`
+- `AI_PROVIDER_PRIORITY=qwen_vl`
+- `ALLOW_EXTERNAL_IMAGE_AI=true` — enable only after explicit privacy approval and endpoint verification.
+- Keep `ALLOW_EXTERNAL_TEXT_AI=false` if Qwen is intended only for image analysis.
+- Keep `ALLOW_OPENROUTER_IMAGE_FALLBACK=false`.
+
+The provider adapter rejects non-loopback plain HTTP endpoints. Local development may use `http://localhost:8000/v1`; deployed endpoints must use HTTPS. Never put endpoint credentials in Git, notebook output, browser code, or chat.
+
+### Application-side verification
+
+Run the vision-service tests from the `ai-vision-service` directory:
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+The tests cover secure Qwen endpoint configuration, image-only privacy policy, server-side priority calculation, and mandatory human review. A passing unit suite does not replace an end-to-end inference test against the actual private GPU endpoint.
+
+### Current integration status
+
+- Supabase-to-FastAPI image forwarding: existing application path inspected.
+- FastAPI-to-Qwen OpenAI-compatible provider adapter: implemented on the architecture branch.
+- TLS restriction and bearer credential requirement: implemented.
+- Mandatory human review for every image-triage result: enforced in FastAPI normalization.
+- Unit tests: added, not yet executed in this environment.
+- Live Qwen GPU endpoint: not provisioned.
+- Production environment variables, Supabase deployment, and Render deployment: unchanged.
