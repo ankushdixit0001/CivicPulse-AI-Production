@@ -229,7 +229,7 @@ Deno.serve(async (req: Request) => {
       if (file.size < 1 || file.size > 8 * 1024 * 1024) return fail("Image must be between 1 byte and 8 MB.");
       if (!["image/jpeg", "image/png", "image/webp"].includes(file.type.toLowerCase())) return fail("Upload a JPG, PNG, or WebP photo.");
       const analysis = await analyze(file, defect);
-      const available = analysis.status === "success" && ["openai_vision", "gemini_vision", "openrouter_vision"].includes(analysis.model_source);
+      const available = analysis.status === "success" && ["openai_vision", "gemini_vision", "openrouter_vision", "qwen_vl_vision"].includes(analysis.model_source);
       return json({
         available,
         analysis,
