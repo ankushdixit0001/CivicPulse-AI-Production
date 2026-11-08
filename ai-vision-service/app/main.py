@@ -365,8 +365,13 @@ async def analyze_issue(
             "Return ONLY JSON with keys: defect_type (pothole|garbage|sewage|streetlight|unknown), confidence (0..1), "
             "damage_coverage_pct (0..100), safety_risk (boolean), summary (short), visible_evidence (array of short strings), "
             "recommended_action (short), human_review_required (boolean), bounding_boxes (array of {label,confidence,bbox}). "
-            "bbox must be [x1,y1,x2,y2] in normalized 0..1000 coordinates. Only include boxes for visible issue evidence. "
-            "priority is not supplied; compute it in the server. If uncertain, use confidence below 0.6 and require human review."
+            "For every clearly visible target defect, return a tight bounding box around the defect itself. "
+            "bbox must be [x1,y1,x2,y2] in normalized 0..1000 image coordinates, with origin at the top-left, x increasing right and y increasing down. "
+            "Coordinates must satisfy 0<=x1<x2<=1000 and 0<=y1<y2<=1000. "
+            "Do not return a box for the whole image, unrelated objects, shadows, or uncertain regions. "
+            "If the defect is not confidently localizable, return an empty bounding_boxes array rather than inventing coordinates. "
+            "Use at most 10 boxes, ordered by confidence descending. priority is not supplied; compute it in the server. "
+            "If uncertain, use confidence below 0.6 and require human review."
         )
         try:
             result = await _openai_vision([{
