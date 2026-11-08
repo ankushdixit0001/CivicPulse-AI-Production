@@ -29,6 +29,20 @@ class ImageTriageIntegrationTests(unittest.TestCase):
         self.assertEqual(result["confidence"], 0.99)
         self.assertTrue(result["human_review_required"])
 
+    def test_model_bounding_boxes_are_normalized_to_zero_to_one(self):
+        result = _normalise_analysis({
+            "defect_type": "pothole",
+            "confidence": 0.9,
+            "bounding_boxes": [
+                {"label": "pothole", "confidence": 0.9, "bbox": [100, 200, 700, 800]},
+                {"label": "invalid", "confidence": 0.8, "bbox": [900, 800, 200, 100]},
+                {"label": "out-of-range", "confidence": 0.8, "bbox": [-1, 0, 500, 500]},
+            ],
+        }, "pothole", self.good_quality)
+
+        self.assertEqual(len(result["bounding_boxes"]), 1)
+        self.assertEqual(result["bounding_boxes"][0]["bbox"], [0.1, 0.2, 0.7, 0.8])
+
     def test_unknown_model_category_is_safely_normalized(self):
         result = _normalise_analysis({
             "defect_type": "unrelated",
