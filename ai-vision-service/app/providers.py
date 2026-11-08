@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,12 +59,26 @@ def _policy_allows(task: str) -> bool:
     return _enabled("ALLOW_EXTERNAL_TEXT_AI", False)
 
 
+def _qwen_endpoint_is_safe(base_url: str) -> bool:
+    """Allow HTTPS endpoints; permit plain HTTP only for loopback development."""
+    try:
+        parsed = urlsplit(base_url)
+        if parsed.scheme == "https":
+            return bool(parsed.hostname) and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+        if parsed.scheme == "http":
+            return parsed.hostname in {"localhost", "127.0.0.1", "::1"} and not parsed.username and not parsed.password
+        return False
+    except ValueError:
+        return False
+
+
 def _key_for(provider: str) -> str:
     if provider == "qwen_vl":
-        # Require a private OpenAI-compatible endpoint and its credential.
+        # Require a private HTTPS OpenAI-compatible endpoint and its credential.
+        # Loopback HTTP is allowed only for local development/testing.
         base_url = os.getenv("QWEN_VL_BASE_URL", "").strip()
         api_key = os.getenv("QWEN_VL_API_KEY", "").strip()
-        if not base_url.startswith(("https://", "http://")) or not api_key:
+        if not _qwen_endpoint_is_safe(base_url) or not api_key:
             return ""
         return api_key
     env_name = {"gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}[provider]
@@ -221,8 +236,8 @@ async def _request_json(provider: str, messages: List[Dict[str, Any]], max_token
                 raise ProviderUnavailable(f"{provider} is not configured.", "not_configured")
             if provider == "qwen_vl":
                 endpoint = os.getenv("QWEN_VL_BASE_URL", "").strip().rstrip("/")
-                if not endpoint.startswith(("https://", "http://")):
-                    raise ProviderUnavailable("Qwen vision endpoint must use HTTP or HTTPS.", "invalid_provider_endpoint")
+                if not _qwen_endpoint_is_safe(endpoint):
+                    raise ProviderUnavailable("Qwen vision endpoint must use HTTPS (or loopback HTTP for local development).", "invalid_provider_endpoint")
                 base_url = endpoint + ("/chat/completions" if endpoint.endswith("/v1") else "/v1/chat/completions")
             else:
                 base_url = "https://openrouter.ai/api/v1/chat/completions" if provider == "openrouter" else "https://api.openai.com/v1/chat/completions"
