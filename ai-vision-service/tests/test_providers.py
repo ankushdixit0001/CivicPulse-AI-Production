@@ -172,6 +172,16 @@ class ProviderPolicyTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QwenVisionProviderTests(unittest.TestCase):
+    def test_qwen_endpoint_requires_https_except_loopback(self):
+        from app.providers import _qwen_endpoint_is_safe
+        self.assertTrue(_qwen_endpoint_is_safe("https://private-gpu.example.com/v1"))
+        self.assertTrue(_qwen_endpoint_is_safe("http://localhost:8000/v1"))
+        self.assertTrue(_qwen_endpoint_is_safe("http://127.0.0.1:8000/v1"))
+        self.assertFalse(_qwen_endpoint_is_safe("http://gpu.example.com/v1"))
+        self.assertFalse(_qwen_endpoint_is_safe("file:///tmp/model"))
+        self.assertFalse(_qwen_endpoint_is_safe("https://user:pass@gpu.example.com/v1"))
+        self.assertFalse(_qwen_endpoint_is_safe("https://gpu.example.com/v1?token=secret"))
+
     def test_qwen_requires_private_endpoint_and_api_key(self):
         from app.providers import _key_for, _model_for
         with patch.dict(os.environ, {
