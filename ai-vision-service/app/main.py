@@ -52,8 +52,8 @@ YOLO_MODEL_SPECS = {
     "garbage": {
         "path": os.getenv("YOLO_GARBAGE_MODEL_PATH", "models/garbage_yolov8.pt").strip(),
         "url": os.getenv("YOLO_GARBAGE_MODEL_URL", "").strip(),
-        # Intentionally empty by default: recyclable-material labels are not proof
-        # of roadside dumping. Configure only after reviewing the checkpoint's names.
+        # Explicit category allowlist: only the garbage class is accepted from Civic Eye.
+        # Do not map recyclable-material classes to roadside dumping.
         "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
                    for x in os.getenv("YOLO_GARBAGE_CLASS_NAMES", "garbage").split(",") if x.strip()},
         "model_id": "civic-eye-yolov8-pothole-garbage",
@@ -147,7 +147,7 @@ if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower(
 YOLO_CLASS_TO_CATEGORY = {
     "pothole": "pothole",
     "garbage": "garbage", "trash": "garbage", "rubbish": "garbage", "dumping": "garbage",
-    "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage", "sewer_overflow": "sewage", "wastewater_overflow": "sewage",
+    "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage", "drainage_overflow": "sewage", "sewer_overflow": "sewage", "wastewater_overflow": "sewage",
     "streetlight": "streetlight", "street_light": "streetlight", "broken_streetlight": "streetlight",
     "damaged_streetlight": "streetlight", "streetlight_damage": "streetlight",
     "lamp_post": "streetlight", "broken_lamp": "streetlight",
