@@ -91,8 +91,11 @@ Artifacts are downloaded at service startup and stored at the corresponding
   been loaded or independently validated yet; do not interpret this as
   production accuracy evidence.
 - **Sewage:** no license-cleared and directly accessible surface-overflow checkpoint configured. A municipal-hazard model advertises drain overflow but requires access approval; review its terms and checkpoint metadata before enabling.
-- **Streetlight:** object detection alone is insufficient; a damage-specific
-  checkpoint is required.
+- **Streetlight:** no suitable, license-verified broken-public-streetlight checkpoint was found. Generic streetlight presence detection cannot establish that a lamp is broken or non-functional. Keep this category on the approved vision-provider/manual-review path until a damage-specific model is available.
+
+The authenticated `GET /health` response includes `civic_yolo_category_status`
+with `loaded`, `load_failed`, or `not_configured` for each category. This is
+a model-loading signal only; it does not certify accuracy or suitability.
 
 For `defect_type=unknown`, the service runs all configured category models.
 For a specific category, it runs only that category's checkpoint. All detections
