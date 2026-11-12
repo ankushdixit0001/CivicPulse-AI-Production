@@ -69,7 +69,7 @@ YOLO_MODEL_SPECS = {
         "path": os.getenv("YOLO_STREETLIGHT_MODEL_PATH", "models/streetlight_yolov8.pt").strip(),
         "url": os.getenv("YOLO_STREETLIGHT_MODEL_URL", "").strip(),
         "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
-                   for x in os.getenv("YOLO_STREETLIGHT_CLASS_NAMES", "broken_streetlight,damaged_streetlight,streetlight_damage,broken_lamp,lamp_off").split(",") if x.strip()},
+                   for x in os.getenv("YOLO_STREETLIGHT_CLASS_NAMES", "broken_streetlight,damaged_streetlight,streetlight_damage,broken_lamp").split(",") if x.strip()},
         "model_id": "configured-streetlight-damage-detector",
     },
 }
