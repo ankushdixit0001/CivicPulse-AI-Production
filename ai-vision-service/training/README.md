@@ -49,14 +49,16 @@ The script saves `artifacts/civicpulse_yolov8n.pt`.
 Run Ultralytics validation on a held-out test set and inspect per-class precision, recall, mAP50 and mAP50-95 plus the confusion matrix and false positives. Do not deploy a model that has not been reviewed on representative local images. Keep a human reviewer in the reporting workflow.
 
 ## Connect to Render
-Upload the trained `.pt` artifact to private object storage and configure these Render environment variables:
 
-- `YOLO_MODEL_URL`: private HTTPS download URL for the artifact (must be reachable by Render without interactive login).
-- `YOLO_MODEL_PATH`: `models/civicpulse_yolov8n.pt`
-- `YOLO_CONFIDENCE`: start with `0.35`, then tune using validation results.
-- `VISION_API_TOKEN`: keep the existing service token unchanged.
+For the reviewed public pothole candidate, configure:
+- `YOLO_POTHOLE_MODEL_URL=https://huggingface.co/peterhdd/pothole-detection-yolov8/resolve/main/best.pt`
+- `YOLO_POTHOLE_MODEL_PATH=models/pothole_yolov8s.pt`
+- `YOLO_CONFIDENCE=0.35` as an initial threshold, not a validated production threshold.
+- Keep `VISION_API_TOKEN` unchanged.
 
-The service downloads the artifact at startup, checks that the URL is HTTPS, caps it at 200 MB and loads the custom detector. The container's local filesystem may be ephemeral, so keep the durable artifact in object storage.
+The service downloads configured model artifacts at startup, follows HTTPS redirects (required by Hugging Face's large-file hosting), caps each file at 200 MB and stores it under the configured model path. Render's local filesystem may be ephemeral, so startup may need to download the artifact again after a restart. For production reliability, consider moving the verified checkpoint to durable private object storage.
+
+The old `YOLO_MODEL_URL` and `YOLO_MODEL_PATH` variables remain available for a legacy unified model. Do not configure both legacy and category-specific checkpoints unless you intentionally want to keep both paths available.
 
 ## API
 The existing authenticated `POST /analyze` endpoint accepts multipart fields `file` and `defect_type`. When custom weights are loaded, inference runs locally inside the Render service and returns `model_source: yolov8_vision` and normalized `[x1,y1,x2,y2]` boxes in 0..1 coordinates. No image is sent to a third-party model provider by this YOLO path.
@@ -81,9 +83,7 @@ Artifacts are downloaded at service startup and stored at the corresponding
 
 ### Current model-selection status
 
-- **Pothole:** candidate `peterhdd/pothole-detection-yolov8`, YOLOv8s,
-  one class named `pothole`, Apache-2.0 model card. This is not YOLOv8n.
-  Validate on representative local road images before enabling.
+- **Pothole:** `peterhdd/pothole-detection-yolov8`, YOLOv8s, one class named `pothole`, Apache-2.0 model card. The direct Hugging Face checkpoint URL is now in `.env.example`. This is not YOLOv8n. Real-world accuracy on local roads remains unverified.
 - **Garbage:** not enabled by default. The Sharktide card describes recyclable
   material detection, but the exact checkpoint class names and license must be
   verified before use. Set `YOLO_GARBAGE_CLASS_NAMES` only to class names
