@@ -39,11 +39,31 @@ CATEGORY_WEIGHTS = {"pothole": 1.2, "garbage": 1.1, "sewage": 1.5, "streetlight"
 ALLOWED_CATEGORIES = set(CATEGORY_WEIGHTS)
 app = FastAPI(title=APP_TITLE, version="2.0.0")
 
-# COCO YOLO is used only for generic object context. It is NOT a civic-defect model.
-try:
-    model = YOLO(os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")) if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true" else None
-except Exception:
-    model = None
+# A custom-trained YOLOv8n model is the native CivicPulse defect detector.
+# Keep generic COCO weights separate: they must never be presented as civic-defect predictions.
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/civicpulse_yolov8n.pt").strip()
+YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.35"))
+civic_model = None
+civic_model_error = None
+model = None  # Optional generic COCO context detector only.
+if YOLO is not None and YOLO_MODEL_PATH and os.path.isfile(YOLO_MODEL_PATH):
+    try:
+        civic_model = YOLO(YOLO_MODEL_PATH)
+    except Exception as exc:
+        civic_model_error = type(exc).__name__
+if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true":
+    try:
+        model = YOLO(os.getenv("GENERIC_YOLO_MODEL_PATH", "yolov8n.pt"))
+    except Exception:
+        model = None
+
+YOLO_CLASS_TO_CATEGORY = {
+    "pothole": "pothole",
+    "garbage": "garbage", "trash": "garbage", "rubbish": "garbage", "waste": "garbage",
+    "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage",
+    "streetlight": "streetlight", "street_light": "streetlight", "broken_streetlight": "streetlight",
+    "lamp_post": "streetlight", "broken_lamp": "streetlight",
+}
 
 
 def _check_token(token: Optional[str]) -> None:
@@ -130,6 +150,84 @@ def _quality_metrics(image_bgr: np.ndarray) -> Dict[str, Any]:
         "contrast": round(contrast, 2),
         "quality": quality,
         "quality_flags": issues,
+    }
+
+
+def _civic_defect_detections(image_bgr: np.ndarray, requested_category: str) -> List[Dict[str, Any]]:
+    """Run the custom CivicPulse YOLO model and return normalized [0,1] boxes."""
+    if civic_model is None:
+        return []
+    height, width = image_bgr.shape[:2]
+    try:
+        predictions = civic_model.predict(
+            source=image_bgr, conf=YOLO_CONFIDENCE, imgsz=640, verbose=False
+        )
+    except Exception:
+        return []
+    detections: List[Dict[str, Any]] = []
+    for prediction in predictions:
+        names = prediction.names or {}
+        for box in prediction.boxes or []:
+            class_id = int(box.cls[0].item())
+            raw_name = str(names.get(class_id, "")).strip().lower().replace("-", "_").replace(" ", "_")
+            category = YOLO_CLASS_TO_CATEGORY.get(raw_name)
+            if not category or (requested_category != "unknown" and category != requested_category):
+                continue
+            x1, y1, x2, y2 = [float(value) for value in box.xyxy[0].tolist()]
+            coords = [
+                max(0.0, min(1.0, x1 / width)),
+                max(0.0, min(1.0, y1 / height)),
+                max(0.0, min(1.0, x2 / width)),
+                max(0.0, min(1.0, y2 / height)),
+            ]
+            if coords[2] <= coords[0] or coords[3] <= coords[1]:
+                continue
+            detections.append({
+                "label": category,
+                "confidence": round(max(0.0, min(1.0, float(box.conf[0].item()))), 4),
+                "bbox": coords,
+            })
+    return sorted(detections, key=lambda item: item["confidence"], reverse=True)[:30]
+
+
+def _yolo_analysis(detections: List[Dict[str, Any]], requested_category: str, quality: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a conservative CivicPulse response from trained detector outputs."""
+    if detections:
+        best = detections[0]
+        category = best["label"]
+        confidence = best["confidence"]
+        coverage = min(100.0, sum(
+            max(0.0, (b["bbox"][2] - b["bbox"][0]) * (b["bbox"][3] - b["bbox"][1]) * 100.0)
+            for b in detections
+        ))
+        summary = f"YOLOv8n detected {len(detections)} possible {category} defect region(s)."
+        action = "Route for municipal staff inspection and confirmation."
+        priority = _priority_from_ai({
+            "defect_type": category, "confidence": confidence,
+            "damage_coverage_pct": coverage, "safety_risk": category in {"pothole", "sewage"},
+        }, category)
+    else:
+        category, confidence, coverage = "unknown", 0.0, 0.0
+        summary = "No supported civic defect was detected above the configured confidence threshold."
+        action = "Review the photo and report description manually; a missed detection is possible."
+        priority = {"defect_type": category, "confidence": 0.0, "damage_coverage_pct": 0.0,
+                    "priority_score": 0.0, "severity": "LOW"}
+    return {
+        "status": "success",
+        "model": "civicpulse-yolov8n",
+        "model_source": "yolov8_vision",
+        **priority,
+        "summary": summary,
+        "visible_evidence": [f"{item['label']} detected at {item['confidence']:.0%} confidence" for item in detections[:8]],
+        "recommended_action": action,
+        "human_review_required": True,
+        "bounding_boxes": detections,
+        "image_quality": quality,
+        "limitations": [
+            "YOLOv8n predictions are estimates and may miss or misclassify defects.",
+            "Bounding boxes indicate detected regions, not verified damage severity.",
+            "A municipal reviewer must confirm every report and priority.",
+        ],
     }
 
 
@@ -318,6 +416,9 @@ def healthcheck() -> Dict[str, Any]:
         "service": APP_TITLE,
         "version": "3.0.0",
         "generic_detector_loaded": model is not None,
+        "civic_yolo_loaded": civic_model is not None,
+        "civic_yolo_model": "civicpulse-yolov8n" if civic_model is not None else None,
+        "civic_yolo_error": civic_model_error,
         "inference_auth_configured": bool(VISION_API_TOKEN),
         "defect_reasoning_configured": analysis_configured,
         "defect_reasoning_available": analysis_available,
@@ -355,6 +456,13 @@ async def analyze_issue(
     image, image_bgr = _load_image(raw)
     quality = _quality_metrics(image_bgr)
     objects = _generic_objects(image_bgr)
+
+    # Prefer native, locally hosted CivicPulse YOLO inference. No image leaves this service.
+    if civic_model is not None:
+        detections = _civic_defect_detections(image_bgr, category)
+        result = _yolo_analysis(detections, category, quality)
+        result["generic_objects"] = objects
+        return result
 
     if task_configured("image_triage"):
         prompt = (
