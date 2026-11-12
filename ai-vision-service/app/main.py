@@ -507,9 +507,11 @@ def healthcheck() -> Dict[str, Any]:
         "service": APP_TITLE,
         "version": "3.0.0",
         "generic_detector_loaded": model is not None,
-        "civic_yolo_loaded": civic_model is not None,
-        "civic_yolo_model": "civicpulse-yolov8n" if civic_model is not None else None,
+        "civic_yolo_loaded": bool(civic_models) or civic_model is not None,
+        "civic_yolo_model": "civicpulse-yolo-registry" if civic_models else ("civicpulse-unified" if civic_model is not None else None),
         "civic_yolo_error": civic_model_error,
+        "civic_yolo_models": {category: spec["model_id"] for category, spec in YOLO_MODEL_SPECS.items() if category in civic_models},
+        "civic_yolo_model_errors": civic_model_errors,
         "inference_auth_configured": bool(VISION_API_TOKEN),
         "defect_reasoning_configured": analysis_configured,
         "defect_reasoning_available": analysis_available,
@@ -549,7 +551,7 @@ async def analyze_issue(
     objects = _generic_objects(image_bgr)
 
     # Prefer native, locally hosted CivicPulse YOLO inference. No image leaves this service.
-    if civic_model is not None:
+    if category in civic_models or (category == "unknown" and civic_models) or civic_model is not None:
         detections = _civic_defect_detections(image_bgr, category)
         result = _yolo_analysis(detections, category, quality)
         result["generic_objects"] = objects
