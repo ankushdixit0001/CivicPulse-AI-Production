@@ -1,0 +1,70 @@
+# CivicPulse YOLOv8n training
+
+## Important
+The stock `yolov8n.pt` model is COCO-pretrained. It is **not** a civic-defect detector.
+Train this project-specific model with correctly labelled photos before enabling civic predictions.
+
+## Dataset classes
+The class IDs and names must be exactly:
+
+| ID | Class |
+|---:|---|
+| 0 | pothole |
+| 1 | garbage |
+| 2 | sewage |
+| 3 | streetlight |
+
+Use YOLO detection labels: one text file per image, each line:
+`class_id x_center y_center width height`
+Coordinates must be normalized to 0..1. Include empty label files for verified images with no target defect. Split by source/location where possible to reduce leakage between train and validation.
+
+Expected folder layout:
+```
+dataset/
+  data.yaml
+  images/train/
+  images/val/
+  images/test/
+  labels/train/
+  labels/val/
+  labels/test/
+```
+
+Copy `data.yaml.example` to `dataset/data.yaml` and set its `path` to the dataset root.
+
+## Train on Google Colab
+1. Select a GPU runtime.
+2. Clone the CivicPulse repository and enter `ai-vision-service`.
+3. Install the vision requirements (the service's pinned PyTorch stack may need adjustment for the Colab Python image; install a compatible Ultralytics/PyTorch combination in the notebook runtime).
+4. Upload or mount the labelled dataset.
+5. Run:
+
+```bash
+python training/train_yolov8n.py --data dataset/data.yaml --epochs 100 --imgsz 640 --batch 16 --device 0
+```
+
+The script saves `artifacts/civicpulse_yolov8n.pt`.
+
+## Validate before deployment
+Run Ultralytics validation on a held-out test set and inspect per-class precision, recall, mAP50 and mAP50-95 plus the confusion matrix and false positives. Do not deploy a model that has not been reviewed on representative local images. Keep a human reviewer in the reporting workflow.
+
+## Connect to Render
+Upload the trained `.pt` artifact to private object storage and configure these Render environment variables:
+
+- `YOLO_MODEL_URL`: private HTTPS download URL for the artifact (must be reachable by Render without interactive login).
+- `YOLO_MODEL_PATH`: `models/civicpulse_yolov8n.pt`
+- `YOLO_CONFIDENCE`: start with `0.35`, then tune using validation results.
+- `VISION_API_TOKEN`: keep the existing service token unchanged.
+
+The service downloads the artifact at startup, checks that the URL is HTTPS, caps it at 200 MB and loads the custom detector. The container's local filesystem may be ephemeral, so keep the durable artifact in object storage.
+
+## API
+The existing authenticated `POST /analyze` endpoint accepts multipart fields `file` and `defect_type`. When custom weights are loaded, inference runs locally inside the Render service and returns `model_source: yolov8_vision` and normalized `[x1,y1,x2,y2]` boxes in 0..1 coordinates. No image is sent to a third-party model provider by this YOLO path.
+
+`GET /health` reports `civic_yolo_loaded` and treats the local detector as configured/available. `GET /health/live` remains a liveness check.
+
+## Limitations
+- Bounding boxes locate model predictions; they do not prove severity or establish legal responsibility.
+- Empty detections do not prove that no defect exists.
+- All AI results require municipal human review.
+- Training data quality and geographic coverage determine real-world performance.
