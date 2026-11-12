@@ -55,8 +55,8 @@ YOLO_MODEL_SPECS = {
         # Intentionally empty by default: recyclable-material labels are not proof
         # of roadside dumping. Configure only after reviewing the checkpoint's names.
         "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
-                   for x in os.getenv("YOLO_GARBAGE_CLASS_NAMES", "").split(",") if x.strip()},
-        "model_id": "configured-garbage-detector",
+                   for x in os.getenv("YOLO_GARBAGE_CLASS_NAMES", "garbage").split(",") if x.strip()},
+        "model_id": "civic-eye-yolov8-pothole-garbage",
     },
     "sewage": {
         "path": os.getenv("YOLO_SEWAGE_MODEL_PATH", "models/sewage_yolov8.pt").strip(),
