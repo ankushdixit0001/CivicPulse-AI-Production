@@ -61,13 +61,15 @@ YOLO_MODEL_SPECS = {
     "sewage": {
         "path": os.getenv("YOLO_SEWAGE_MODEL_PATH", "models/sewage_yolov8.pt").strip(),
         "url": os.getenv("YOLO_SEWAGE_MODEL_URL", "").strip(),
-        "labels": {"sewage", "sewer_overflow", "drain_overflow", "wastewater_overflow"},
+        "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
+                   for x in os.getenv("YOLO_SEWAGE_CLASS_NAMES", "sewage,sewer_overflow,drain_overflow,wastewater_overflow,drainage_overflow").split(",") if x.strip()},
         "model_id": "configured-sewage-detector",
     },
     "streetlight": {
         "path": os.getenv("YOLO_STREETLIGHT_MODEL_PATH", "models/streetlight_yolov8.pt").strip(),
         "url": os.getenv("YOLO_STREETLIGHT_MODEL_URL", "").strip(),
-        "labels": {"broken_streetlight", "damaged_streetlight", "streetlight_damage", "broken_lamp"},
+        "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
+                   for x in os.getenv("YOLO_STREETLIGHT_CLASS_NAMES", "broken_streetlight,damaged_streetlight,streetlight_damage,broken_lamp,lamp_off").split(",") if x.strip()},
         "model_id": "configured-streetlight-damage-detector",
     },
 }
@@ -111,7 +113,16 @@ if YOLO is not None:
             if _spec["url"] and not os.path.isfile(_spec["path"]):
                 _download_model_artifact(_spec["url"], _spec["path"])
             if _spec["path"] and os.path.isfile(_spec["path"]):
-                civic_models[_category] = YOLO(_spec["path"])
+                _loaded_model = YOLO(_spec["path"])
+                _raw_names = _loaded_model.names or {}
+                _available_names = list(_raw_names.values()) if isinstance(_raw_names, dict) else list(_raw_names)
+                _normalised_names = {
+                    str(_name).strip().lower().replace("-", "_").replace(" ", "_")
+                    for _name in _available_names
+                }
+                if not (_normalised_names & _spec["labels"]):
+                    raise ValueError("checkpoint_class_names_do_not_match_category")
+                civic_models[_category] = _loaded_model
         except Exception as _exc:
             civic_model_errors[_category] = type(_exc).__name__
 
