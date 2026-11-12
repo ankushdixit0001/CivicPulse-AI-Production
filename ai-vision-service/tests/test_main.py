@@ -1,6 +1,6 @@
 import unittest
 
-from app.main import _normalise_analysis, _priority_from_ai
+from app.main import _normalise_analysis, _priority_from_ai, _yolo_analysis
 
 
 class ImageTriageIntegrationTests(unittest.TestCase):
@@ -14,6 +14,23 @@ class ImageTriageIntegrationTests(unittest.TestCase):
             "quality": "good",
             "quality_flags": [],
         }
+
+
+    def test_yolo_analysis_returns_normalized_boxes_and_human_review(self):
+        result = _yolo_analysis([{
+            "label": "pothole", "confidence": 0.91, "bbox": [0.1, 0.2, 0.7, 0.8]
+        }], "unknown", self.good_quality)
+        self.assertEqual(result["model_source"], "yolov8_vision")
+        self.assertEqual(result["defect_type"], "pothole")
+        self.assertEqual(result["bounding_boxes"][0]["bbox"], [0.1, 0.2, 0.7, 0.8])
+        self.assertTrue(result["human_review_required"])
+
+    def test_yolo_no_detection_does_not_invent_a_defect(self):
+        result = _yolo_analysis([], "pothole", self.good_quality)
+        self.assertEqual(result["defect_type"], "unknown")
+        self.assertEqual(result["confidence"], 0.0)
+        self.assertEqual(result["bounding_boxes"], [])
+        self.assertTrue(result["human_review_required"])
 
     def test_qwen_analysis_is_always_marked_for_human_review(self):
         result = _normalise_analysis({
