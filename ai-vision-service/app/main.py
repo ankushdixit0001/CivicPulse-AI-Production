@@ -6,6 +6,7 @@ import io
 import json
 import math
 import os
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
@@ -107,7 +108,12 @@ def _download_model_artifact(url: str, destination: str) -> None:
             os.remove(temporary_path)
 
 
-if YOLO is not None:
+def _load_configured_models() -> None:
+    """Load model weights off the event-loop startup path so the API binds its port immediately."""
+    global civic_model, civic_model_error, model
+    if YOLO is None:
+        return
+
     for _category, _spec in YOLO_MODEL_SPECS.items():
         try:
             if _spec["url"] and not os.path.isfile(_spec["path"]):
@@ -123,6 +129,7 @@ if YOLO is not None:
                 if not (_normalised_names & _spec["labels"]):
                     raise ValueError("checkpoint_class_names_do_not_match_category")
                 civic_models[_category] = _loaded_model
+                civic_model_errors.pop(_category, None)
         except Exception as _exc:
             civic_model_errors[_category] = type(_exc).__name__
 
@@ -138,11 +145,17 @@ if YOLO is not None:
         except Exception as _exc:
             civic_model_error = type(_exc).__name__
 
-if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true":
-    try:
-        model = YOLO(os.getenv("GENERIC_YOLO_MODEL_PATH", "yolov8n.pt"))
-    except Exception:
-        model = None
+    if os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true":
+        try:
+            model = YOLO(os.getenv("GENERIC_YOLO_MODEL_PATH", "yolov8n.pt"))
+        except Exception:
+            model = None
+
+
+# Never make a remote checkpoint download block Uvicorn from opening its HTTP port.
+# The API starts immediately; /health reports model loading as it progresses.
+if YOLO is not None:
+    threading.Thread(target=_load_configured_models, name="civicpulse-model-loader", daemon=True).start()
 
 YOLO_CLASS_TO_CATEGORY = {
     "pothole": "pothole",
