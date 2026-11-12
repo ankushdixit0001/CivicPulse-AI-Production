@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 from ultralytics import YOLO
+import yaml
 from validate_dataset import validate_dataset
 
 DEFAULT_CLASSES = {
@@ -46,7 +47,7 @@ def main() -> None:
 
     run_name = args.name or f"{args.category}-yolov8n"
     model = YOLO("yolov8n.pt")
-    results = model.train(
+    model.train(
         data=str(data_path),
         epochs=args.epochs,
         imgsz=args.imgsz,
@@ -70,8 +71,8 @@ def main() -> None:
 
     # Evaluate only on the held-out test split; never use test metrics to tune training.
     test_metrics = None
-    config_text = data_path.read_text(encoding="utf-8")
-    if "test:" in config_text:
+    dataset_config = yaml.safe_load(data_path.read_text(encoding="utf-8"))
+    if dataset_config.get("test"):
         evaluator = YOLO(str(best))
         metrics = evaluator.val(data=str(data_path), split="test", imgsz=args.imgsz, device=args.device)
         test_metrics = {
@@ -99,4 +100,5 @@ def main() -> None:
     print("Do not deploy until a reviewer inspects test images, false positives and local geographic coverage.")
 
 
-if __text=content; false) {}
+if __name__ == "__main__":
+    main()
