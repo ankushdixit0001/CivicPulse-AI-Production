@@ -1,15 +1,13 @@
-# Copy to dataset/data.yaml and update path to your extracted dataset root.
+# Copy to dataset/data.yaml and update path to this category's dataset root.
+# Train one checkpoint per civic category. This example is for pothole only.
 # Directory layout:
 # dataset/
 #   images/{train,val,test}/
 #   labels/{train,val,test}/
-path: ../civicpulse-dataset
+path: ../civicpulse-pothole-dataset
 train: images/train
 val: images/val
 test: images/test
 
 names:
   0: pothole
-  1: garbage
-  2: sewage
-  3: streetlight
