@@ -68,3 +68,32 @@ The existing authenticated `POST /analyze` endpoint accepts multipart fields `fi
 - Empty detections do not prove that no defect exists.
 - All AI results require municipal human review.
 - Training data quality and geographic coverage determine real-world performance.
+
+
+## Multi-model inference registry
+
+The FastAPI service can load independent checkpoints per category using
+`YOLO_POTHOLE_MODEL_URL`, `YOLO_GARBAGE_MODEL_URL`,
+`YOLO_SEWAGE_MODEL_URL`, and `YOLO_STREETLIGHT_MODEL_URL`.
+Each URL must be HTTPS and point directly to a checkpoint under 200 MB.
+Artifacts are downloaded at service startup and stored at the corresponding
+`*_MODEL_PATH`. Do not commit model binaries or secrets to Git.
+
+### Current model-selection status
+
+- **Pothole:** candidate `peterhdd/pothole-detection-yolov8`, YOLOv8s,
+  one class named `pothole`, Apache-2.0 model card. This is not YOLOv8n.
+  Validate on representative local road images before enabling.
+- **Garbage:** not enabled by default. The Sharktide card describes recyclable
+  material detection, but the exact checkpoint class names and license must be
+  verified before use. Set `YOLO_GARBAGE_CLASS_NAMES` only to class names
+  confirmed in the downloaded checkpoint; recyclable objects must not
+  automatically be treated as illegal dumping.
+- **Sewage:** no verified surface-overflow checkpoint configured.
+- **Streetlight:** object detection alone is insufficient; a damage-specific
+  checkpoint is required.
+
+For `defect_type=unknown`, the service runs all configured category models.
+For a specific category, it runs only that category's checkpoint. All detections
+are normalized to the existing `bounding_boxes` response format and require
+human review. Missing model weights do not count as a negative detection.
