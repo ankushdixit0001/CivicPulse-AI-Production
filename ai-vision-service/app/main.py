@@ -136,7 +136,7 @@ if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower(
 YOLO_CLASS_TO_CATEGORY = {
     "pothole": "pothole",
     "garbage": "garbage", "trash": "garbage", "rubbish": "garbage", "dumping": "garbage",
-    "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage",
+    "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage", "sewer_overflow": "sewage", "wastewater_overflow": "sewage",
     "streetlight": "streetlight", "street_light": "streetlight", "broken_streetlight": "streetlight",
     "damaged_streetlight": "streetlight", "streetlight_damage": "streetlight",
     "lamp_post": "streetlight", "broken_lamp": "streetlight",
