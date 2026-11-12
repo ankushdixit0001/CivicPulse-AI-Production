@@ -84,12 +84,13 @@ Artifacts are downloaded at service startup and stored at the corresponding
 ### Current model-selection status
 
 - **Pothole:** `peterhdd/pothole-detection-yolov8`, YOLOv8s, one class named `pothole`, Apache-2.0 model card. The direct Hugging Face checkpoint URL is now in `.env.example`. This is not YOLOv8n. Real-world accuracy on local roads remains unverified.
-- **Garbage:** not enabled by default. The Sharktide card describes recyclable
-  material detection, but the exact checkpoint class names and license must be
-  verified before use. Set `YOLO_GARBAGE_CLASS_NAMES` only to class names
-  confirmed in the downloaded checkpoint; recyclable objects must not
-  automatically be treated as illegal dumping.
-- **Sewage:** no verified surface-overflow checkpoint configured.
+- **Garbage:** configured to use `tanmay9132/civic-eye-pothole-garbage`,
+  an Apache-2.0 model card documenting exactly two classes: `Pothole` and
+  `Garbage`. The service maps only the `garbage` output from this checkpoint
+  to garbage reports. Its weights and actual runtime class metadata have not
+  been loaded or independently validated yet; do not interpret this as
+  production accuracy evidence.
+- **Sewage:** no license-cleared and directly accessible surface-overflow checkpoint configured. A municipal-hazard model advertises drain overflow but requires access approval; review its terms and checkpoint metadata before enabling.
 - **Streetlight:** object detection alone is insufficient; a damage-specific
   checkpoint is required.
 
