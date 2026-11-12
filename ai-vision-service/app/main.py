@@ -42,10 +42,35 @@ app = FastAPI(title=APP_TITLE, version="2.0.0")
 # A custom-trained YOLOv8n model is the native CivicPulse defect detector.
 # Keep generic COCO weights separate: they must never be presented as civic-defect predictions.
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/civicpulse_yolov8n.pt").strip()
+YOLO_MODEL_URL = os.getenv("YOLO_MODEL_URL", "").strip()
 YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.35"))
 civic_model = None
 civic_model_error = None
 model = None  # Optional generic COCO context detector only.
+
+# Render's container filesystem is ephemeral. If configured, fetch the trained
+# artifact from a private HTTPS object URL at startup; never download from HTTP.
+if YOLO_MODEL_URL and not os.path.isfile(YOLO_MODEL_PATH):
+    try:
+        from urllib.parse import urlsplit
+        parsed_model_url = urlsplit(YOLO_MODEL_URL)
+        if parsed_model_url.scheme != "https" or not parsed_model_url.hostname:
+            raise ValueError("YOLO_MODEL_URL must be an HTTPS URL.")
+        os.makedirs(os.path.dirname(YOLO_MODEL_PATH) or ".", exist_ok=True)
+        with httpx.stream("GET", YOLO_MODEL_URL, timeout=120.0, follow_redirects=False) as response:
+            response.raise_for_status()
+            temporary_path = YOLO_MODEL_PATH + ".download"
+            total_bytes = 0
+            with open(temporary_path, "wb") as artifact:
+                for chunk in response.iter_bytes():
+                    total_bytes += len(chunk)
+                    if total_bytes > 200 * 1024 * 1024:
+                        raise ValueError("YOLO model artifact exceeds the 200 MB limit.")
+                    artifact.write(chunk)
+        os.replace(temporary_path, YOLO_MODEL_PATH)
+    except Exception as exc:
+        civic_model_error = "model_download_failed:" + type(exc).__name__
+
 if YOLO is not None and YOLO_MODEL_PATH and os.path.isfile(YOLO_MODEL_PATH):
     try:
         civic_model = YOLO(YOLO_MODEL_PATH)
@@ -405,10 +430,10 @@ def liveness() -> Dict[str, Any]:
 
 @app.get("/health")
 def healthcheck() -> Dict[str, Any]:
-    analysis_configured = task_configured("image_triage")
+    analysis_configured = civic_model is not None or task_configured("image_triage")
     repair_configured = task_configured("repair_verification")
     chat_configured = task_configured("chat")
-    analysis_available = task_recently_successful("image_triage")
+    analysis_available = civic_model is not None or task_recently_successful("image_triage")
     repair_available = task_recently_successful("repair_verification")
     chat_available = task_recently_successful("chat")
     return {
