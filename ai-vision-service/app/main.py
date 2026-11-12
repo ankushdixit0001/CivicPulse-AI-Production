@@ -516,6 +516,7 @@ def healthcheck() -> Dict[str, Any]:
         "civic_yolo_error": civic_model_error,
         "civic_yolo_models": {category: spec["model_id"] for category, spec in YOLO_MODEL_SPECS.items() if category in civic_models},
         "civic_yolo_model_errors": civic_model_errors,
+        "civic_yolo_category_status": {category: ("loaded" if category in civic_models else "load_failed" if category in civic_model_errors else "not_configured") for category in YOLO_MODEL_SPECS},
         "inference_auth_configured": bool(VISION_API_TOKEN),
         "defect_reasoning_configured": analysis_configured,
         "defect_reasoning_available": analysis_available,
