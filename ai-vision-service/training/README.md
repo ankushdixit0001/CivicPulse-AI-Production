@@ -77,7 +77,7 @@ The existing authenticated `POST /analyze` endpoint accepts multipart fields `fi
 The FastAPI service can load independent checkpoints per category using
 `YOLO_POTHOLE_MODEL_URL`, `YOLO_GARBAGE_MODEL_URL`,
 `YOLO_SEWAGE_MODEL_URL`, and `YOLO_STREETLIGHT_MODEL_URL`.
-Each URL must be HTTPS and point directly to a checkpoint under 200 MB.
+Each URL must be HTTPS and point directly to a checkpoint under 200 MB. Set `YOLO_SEWAGE_CLASS_NAMES` and `YOLO_STREETLIGHT_CLASS_NAMES` to exact normalized class names from the respective trained checkpoint. At startup, the service checks that a checkpoint contains at least one configured category label; mismatched checkpoints are rejected.
 Artifacts are downloaded at service startup and stored at the corresponding
 `*_MODEL_PATH`. Do not commit model binaries or secrets to Git.
 
@@ -90,8 +90,8 @@ Artifacts are downloaded at service startup and stored at the corresponding
   to garbage reports. Its weights and actual runtime class metadata have not
   been loaded or independently validated yet; do not interpret this as
   production accuracy evidence.
-- **Sewage:** no license-cleared and directly accessible surface-overflow checkpoint configured. A municipal-hazard model advertises drain overflow but requires access approval; review its terms and checkpoint metadata before enabling.
-- **Streetlight:** no suitable, license-verified broken-public-streetlight checkpoint was found. Generic streetlight presence detection cannot establish that a lamp is broken or non-functional. Keep this category on the approved vision-provider/manual-review path until a damage-specific model is available.
+- **Sewage / drain overflow:** no ready-to-download trained checkpoint is verified. A Roboflow dataset lists six drain/manhole classes, including `open drainage (overflowing)` and `drainage overflow(repair)`, under MIT; it contains only 302 images and lists zero trained models. Treat it as a small research seed, not a production detector. A separate Indian road-hazard YOLOv8n project detects waterlogging, but reports test mAP@0.5 of 0.177 and uses a CC BY-NC-SA 4.0 dataset; it is not suitable as a production default without licensing review and substantial retraining.
+- **Streetlight:** a Hugging Face CC-BY-4.0 dataset provides 8,428 manually annotated lamp-bulb images with `lamp_on`, `lamp_off`, and `lamp_occluded` labels, but no ready-made YOLO checkpoint was verified. It was collected on Moscow routes, so local Indian-road generalization is unknown. `lamp_off` alone is not proof of a fault: inference needs capture time/day-night context and human review. A small Roboflow dataset has a `broken_streetlight` class but only 273 images and no trained model. Keep both categories on the approved vision-provider/manual-review path until a properly licensed, locally evaluated checkpoint is trained.
 
 The authenticated `GET /health` response includes `civic_yolo_category_status`
 with `loaded`, `load_failed`, or `not_configured` for each category. This is
