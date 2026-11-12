@@ -39,43 +39,94 @@ CATEGORY_WEIGHTS = {"pothole": 1.2, "garbage": 1.1, "sewage": 1.5, "streetlight"
 ALLOWED_CATEGORIES = set(CATEGORY_WEIGHTS)
 app = FastAPI(title=APP_TITLE, version="2.0.0")
 
-# A custom-trained YOLOv8n model is the native CivicPulse defect detector.
-# Keep generic COCO weights separate: they must never be presented as civic-defect predictions.
-YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/civicpulse_yolov8n.pt").strip()
-YOLO_MODEL_URL = os.getenv("YOLO_MODEL_URL", "").strip()
+# Category-specific model registry. Each checkpoint is independent because class IDs
+# and labels differ between third-party models. Generic COCO weights remain separate.
 YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.35"))
-civic_model = None
+YOLO_MODEL_SPECS = {
+    "pothole": {
+        "path": os.getenv("YOLO_POTHOLE_MODEL_PATH", "models/pothole_yolov8s.pt").strip(),
+        "url": os.getenv("YOLO_POTHOLE_MODEL_URL", "").strip(),
+        "labels": {"pothole"},
+        "model_id": "peterhdd-pothole-yolov8s",
+    },
+    "garbage": {
+        "path": os.getenv("YOLO_GARBAGE_MODEL_PATH", "models/garbage_yolov8.pt").strip(),
+        "url": os.getenv("YOLO_GARBAGE_MODEL_URL", "").strip(),
+        # Intentionally empty by default: recyclable-material labels are not proof
+        # of roadside dumping. Configure only after reviewing the checkpoint's names.
+        "labels": {x.strip().lower().replace("-", "_").replace(" ", "_")
+                   for x in os.getenv("YOLO_GARBAGE_CLASS_NAMES", "").split(",") if x.strip()},
+        "model_id": "configured-garbage-detector",
+    },
+    "sewage": {
+        "path": os.getenv("YOLO_SEWAGE_MODEL_PATH", "models/sewage_yolov8.pt").strip(),
+        "url": os.getenv("YOLO_SEWAGE_MODEL_URL", "").strip(),
+        "labels": {"sewage", "sewer_overflow", "drain_overflow", "wastewater_overflow"},
+        "model_id": "configured-sewage-detector",
+    },
+    "streetlight": {
+        "path": os.getenv("YOLO_STREETLIGHT_MODEL_PATH", "models/streetlight_yolov8.pt").strip(),
+        "url": os.getenv("YOLO_STREETLIGHT_MODEL_URL", "").strip(),
+        "labels": {"broken_streetlight", "damaged_streetlight", "streetlight_damage", "broken_lamp"},
+        "model_id": "configured-streetlight-damage-detector",
+    },
+}
+YOLO_MODEL_URL = os.getenv("YOLO_MODEL_URL", "").strip()  # Legacy single-model compatibility.
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/civicpulse_yolov8n.pt").strip()
+civic_models: Dict[str, Any] = {}
+civic_model_errors: Dict[str, str] = {}
+civic_model = None  # Legacy alias used by older integrations/tests.
 civic_model_error = None
 model = None  # Optional generic COCO context detector only.
 
-# Render's container filesystem is ephemeral. If configured, fetch the trained
-# artifact from a private HTTPS object URL at startup; never download from HTTP.
-if YOLO_MODEL_URL and not os.path.isfile(YOLO_MODEL_PATH):
+
+def _download_model_artifact(url: str, destination: str) -> None:
+    from urllib.parse import urlsplit
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("YOLO model URLs must use HTTPS.")
+    os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
+    temporary_path = destination + ".download"
+    total_bytes = 0
     try:
-        from urllib.parse import urlsplit
-        parsed_model_url = urlsplit(YOLO_MODEL_URL)
-        if parsed_model_url.scheme != "https" or not parsed_model_url.hostname:
-            raise ValueError("YOLO_MODEL_URL must be an HTTPS URL.")
-        os.makedirs(os.path.dirname(YOLO_MODEL_PATH) or ".", exist_ok=True)
-        with httpx.stream("GET", YOLO_MODEL_URL, timeout=120.0, follow_redirects=False) as response:
+        with httpx.stream("GET", url, timeout=120.0, follow_redirects=False) as response:
             response.raise_for_status()
-            temporary_path = YOLO_MODEL_PATH + ".download"
-            total_bytes = 0
             with open(temporary_path, "wb") as artifact:
                 for chunk in response.iter_bytes():
                     total_bytes += len(chunk)
                     if total_bytes > 200 * 1024 * 1024:
                         raise ValueError("YOLO model artifact exceeds the 200 MB limit.")
                     artifact.write(chunk)
-        os.replace(temporary_path, YOLO_MODEL_PATH)
-    except Exception as exc:
-        civic_model_error = "model_download_failed:" + type(exc).__name__
+        if total_bytes == 0:
+            raise ValueError("YOLO model artifact is empty.")
+        os.replace(temporary_path, destination)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
-if YOLO is not None and YOLO_MODEL_PATH and os.path.isfile(YOLO_MODEL_PATH):
-    try:
-        civic_model = YOLO(YOLO_MODEL_PATH)
-    except Exception as exc:
-        civic_model_error = type(exc).__name__
+
+if YOLO is not None:
+    for _category, _spec in YOLO_MODEL_SPECS.items():
+        try:
+            if _spec["url"] and not os.path.isfile(_spec["path"]):
+                _download_model_artifact(_spec["url"], _spec["path"])
+            if _spec["path"] and os.path.isfile(_spec["path"]):
+                civic_models[_category] = YOLO(_spec["path"])
+        except Exception as _exc:
+            civic_model_errors[_category] = type(_exc).__name__
+
+    # Backward compatibility for the previously documented single unified checkpoint.
+    if not civic_models and YOLO_MODEL_URL and not os.path.isfile(YOLO_MODEL_PATH):
+        try:
+            _download_model_artifact(YOLO_MODEL_URL, YOLO_MODEL_PATH)
+        except Exception as _exc:
+            civic_model_error = "model_download_failed:" + type(_exc).__name__
+    if not civic_models and YOLO_MODEL_PATH and os.path.isfile(YOLO_MODEL_PATH):
+        try:
+            civic_model = YOLO(YOLO_MODEL_PATH)
+        except Exception as _exc:
+            civic_model_error = type(_exc).__name__
+
 if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower() == "true":
     try:
         model = YOLO(os.getenv("GENERIC_YOLO_MODEL_PATH", "yolov8n.pt"))
@@ -84,12 +135,12 @@ if YOLO is not None and os.getenv("ENABLE_GENERIC_YOLO", "false").strip().lower(
 
 YOLO_CLASS_TO_CATEGORY = {
     "pothole": "pothole",
-    "garbage": "garbage", "trash": "garbage", "rubbish": "garbage", "waste": "garbage",
+    "garbage": "garbage", "trash": "garbage", "rubbish": "garbage", "dumping": "garbage",
     "sewage": "sewage", "sewer": "sewage", "overflow": "sewage", "drain_overflow": "sewage",
     "streetlight": "streetlight", "street_light": "streetlight", "broken_streetlight": "streetlight",
+    "damaged_streetlight": "streetlight", "streetlight_damage": "streetlight",
     "lamp_post": "streetlight", "broken_lamp": "streetlight",
 }
-
 
 def _check_token(token: Optional[str]) -> None:
     if not VISION_API_TOKEN:
@@ -179,41 +230,56 @@ def _quality_metrics(image_bgr: np.ndarray) -> Dict[str, Any]:
 
 
 def _civic_defect_detections(image_bgr: np.ndarray, requested_category: str) -> List[Dict[str, Any]]:
-    """Run the custom CivicPulse YOLO model and return normalized [0,1] boxes."""
-    if civic_model is None:
-        return []
+    """Run only the requested category model(s), returning normalized [0,1] boxes."""
     height, width = image_bgr.shape[:2]
-    try:
-        predictions = civic_model.predict(
-            source=image_bgr, conf=YOLO_CONFIDENCE, imgsz=640, verbose=False
-        )
-    except Exception:
-        return []
+    selected = (
+        [(requested_category, civic_models[requested_category])]
+        if requested_category in civic_models
+        else list(civic_models.items()) if requested_category == "unknown" else []
+    )
+    # Preserve compatibility with a previously configured unified CivicPulse model.
+    if not selected and civic_model is not None:
+        selected = [(requested_category, civic_model)]
     detections: List[Dict[str, Any]] = []
-    for prediction in predictions:
-        names = prediction.names or {}
-        for box in prediction.boxes or []:
-            class_id = int(box.cls[0].item())
-            raw_name = str(names.get(class_id, "")).strip().lower().replace("-", "_").replace(" ", "_")
-            category = YOLO_CLASS_TO_CATEGORY.get(raw_name)
-            if not category or (requested_category != "unknown" and category != requested_category):
+    for model_category, detector in selected:
+        try:
+            predictions = detector.predict(
+                source=image_bgr, conf=YOLO_CONFIDENCE, imgsz=640, verbose=False
+            )
+        except Exception:
+            continue
+        for prediction in predictions:
+            names = prediction.names or {}
+            boxes = prediction.boxes
+            if boxes is None:
                 continue
-            x1, y1, x2, y2 = [float(value) for value in box.xyxy[0].tolist()]
-            coords = [
-                max(0.0, min(1.0, x1 / width)),
-                max(0.0, min(1.0, y1 / height)),
-                max(0.0, min(1.0, x2 / width)),
-                max(0.0, min(1.0, y2 / height)),
-            ]
-            if coords[2] <= coords[0] or coords[3] <= coords[1]:
-                continue
-            detections.append({
-                "label": category,
-                "confidence": round(max(0.0, min(1.0, float(box.conf[0].item()))), 4),
-                "bbox": coords,
-            })
+            for box in boxes:
+                class_id = int(box.cls[0].item())
+                raw_name = (names.get(class_id, "") if isinstance(names, dict)
+                            else names[class_id] if class_id < len(names) else "")
+                raw_name = str(raw_name).strip().lower().replace("-", "_").replace(" ", "_")
+                category = YOLO_CLASS_TO_CATEGORY.get(raw_name)
+                if model_category == "garbage" and raw_name in YOLO_MODEL_SPECS["garbage"]["labels"]:
+                    category = "garbage"
+                # A model assigned to one category cannot emit another category.
+                if category != model_category:
+                    continue
+                x1, y1, x2, y2 = [float(value) for value in box.xyxy[0].tolist()]
+                coords = [
+                    max(0.0, min(1.0, x1 / width)),
+                    max(0.0, min(1.0, y1 / height)),
+                    max(0.0, min(1.0, x2 / width)),
+                    max(0.0, min(1.0, y2 / height)),
+                ]
+                if coords[2] <= coords[0] or coords[3] <= coords[1]:
+                    continue
+                detections.append({
+                    "label": category,
+                    "confidence": round(max(0.0, min(1.0, float(box.conf[0].item()))), 4),
+                    "bbox": coords,
+                    "detector": YOLO_MODEL_SPECS.get(model_category, {}).get("model_id", "civicpulse-unified"),
+                })
     return sorted(detections, key=lambda item: item["confidence"], reverse=True)[:30]
-
 
 def _yolo_analysis(detections: List[Dict[str, Any]], requested_category: str, quality: Dict[str, Any]) -> Dict[str, Any]:
     """Build a conservative CivicPulse response from trained detector outputs."""
@@ -225,7 +291,7 @@ def _yolo_analysis(detections: List[Dict[str, Any]], requested_category: str, qu
             max(0.0, (b["bbox"][2] - b["bbox"][0]) * (b["bbox"][3] - b["bbox"][1]) * 100.0)
             for b in detections
         ))
-        summary = f"YOLOv8n detected {len(detections)} possible {category} defect region(s)."
+        summary = f"YOLO category detector found {len(detections)} possible {category} region(s)."
         action = "Route for municipal staff inspection and confirmation."
         priority = _priority_from_ai({
             "defect_type": category, "confidence": confidence,
@@ -239,7 +305,7 @@ def _yolo_analysis(detections: List[Dict[str, Any]], requested_category: str, qu
                     "priority_score": 0.0, "severity": "LOW"}
     return {
         "status": "success",
-        "model": "civicpulse-yolov8n",
+        "model": "civicpulse-yolo-registry",
         "model_source": "yolov8_vision",
         **priority,
         "summary": summary,
@@ -430,10 +496,10 @@ def liveness() -> Dict[str, Any]:
 
 @app.get("/health")
 def healthcheck() -> Dict[str, Any]:
-    analysis_configured = civic_model is not None or task_configured("image_triage")
+    analysis_configured = bool(civic_models) or civic_model is not None or task_configured("image_triage")
     repair_configured = task_configured("repair_verification")
     chat_configured = task_configured("chat")
-    analysis_available = civic_model is not None or task_recently_successful("image_triage")
+    analysis_available = bool(civic_models) or civic_model is not None or task_recently_successful("image_triage")
     repair_available = task_recently_successful("repair_verification")
     chat_available = task_recently_successful("chat")
     return {
