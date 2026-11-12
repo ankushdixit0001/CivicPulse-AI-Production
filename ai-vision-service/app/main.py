@@ -89,7 +89,7 @@ def _download_model_artifact(url: str, destination: str) -> None:
     temporary_path = destination + ".download"
     total_bytes = 0
     try:
-        with httpx.stream("GET", url, timeout=120.0, follow_redirects=False) as response:
+        with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as response:
             response.raise_for_status()
             with open(temporary_path, "wb") as artifact:
                 for chunk in response.iter_bytes():
@@ -319,7 +319,7 @@ def _yolo_analysis(detections: List[Dict[str, Any]], requested_category: str, qu
         "bounding_boxes": detections,
         "image_quality": quality,
         "limitations": [
-            "YOLOv8n predictions are estimates and may miss or misclassify defects.",
+            "YOLO predictions are estimates and may miss or misclassify defects.",
             "Bounding boxes indicate detected regions, not verified damage severity.",
             "A municipal reviewer must confirm every report and priority.",
         ],
