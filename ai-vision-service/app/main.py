@@ -239,7 +239,7 @@ def _civic_defect_detections(image_bgr: np.ndarray, requested_category: str) -> 
     )
     # Preserve compatibility with a previously configured unified CivicPulse model.
     if not selected and civic_model is not None:
-        selected = [(requested_category, civic_model)]
+        selected = [("unified", civic_model)]
     detections: List[Dict[str, Any]] = []
     for model_category, detector in selected:
         try:
@@ -262,7 +262,11 @@ def _civic_defect_detections(image_bgr: np.ndarray, requested_category: str) -> 
                 if model_category == "garbage" and raw_name in YOLO_MODEL_SPECS["garbage"]["labels"]:
                     category = "garbage"
                 # A model assigned to one category cannot emit another category.
-                if category != model_category:
+                if category is None:
+                    continue
+                if model_category != "unified" and category != model_category:
+                    continue
+                if requested_category != "unknown" and category != requested_category:
                     continue
                 x1, y1, x2, y2 = [float(value) for value in box.xyxy[0].tolist()]
                 coords = [
